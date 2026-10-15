@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent
 BASE_DIR = APP_DIR.parent
+LOG_DIR = BASE_DIR / "logs"                  # created on startup; git-ignored
+SESSION_LOG_DIR = LOG_DIR / "sessions"       # one transcript file per chat session
+APP_LOG_FILE = LOG_DIR / "app.log"           # application log (rotating)
 
 # Fixed limits. These are product decisions, not deployment settings.
 MAX_MESSAGE_CHARS = 1000

@@ -101,3 +101,46 @@ Conversations are kept in memory, so use a single worker process.
   2. The chatbot pipeline: a diagram, details for each stage, conversation state and logging.
   3. The full folder structure: a tree plus a table describing each folder and file, and the list of exposed MCP tools.
 - Wrote this file (`inline_text.md`) with the conversation so far.
+
+## 2. Assistant: reply
+
+I've rewritten `README.md` in the order you asked and saved our chat so far to `inline_text.md`.
+- **README:** (1) setup, (2) the chatbot pipeline with a diagram and stage details, conversation state and logging, (3) the full folder structure with a table describing every file, plus the exposed MCP tools.
+- **`inline_text.md`:** both of your messages word for word, a summary of the work I did for each, and my first reply in full. Secrets and `.env` contents are left out.
+
+---
+
+## 3. User
+
+> Great, now the goal is to create a  logs folder  which stores  all the logs (including user inputs and chatbot answers) in a log file.  The logs should be stored session wisee, each chat session should have its own log file with all the chats included and the api endpoints used. The logs folder should be placed in gitignore, and if the project does not contain a log folder, it should be created on app startup. After implementing this change, edit Readme  to add logs functionality, and edit inline_text.md to update this chat.
+
+## 3. Assistant: work performed
+
+**New module: `app/chat/transcript.py`**
+- `TurnTrace` collects, for one turn:
+  - the HTTP endpoint
+  - the redaction categories
+  - the number of Gemini `generateContent` calls
+  - each MCP tool call with its arguments and status (`ok`, `error returned by tool`, `rejected: tool not exposed`, `rejected: schema validation failed`, `rejected: values not provided by the user` or `failed: MCP server unavailable`)
+  - any local guardrail block reason
+- `TranscriptLogger`:
+  - creates one file per chat session in `logs/sessions/` on its first message, with a header (session tag, start time, model)
+  - appends every turn (endpoint, response time, redacted user message, Gemini and MCP usage, answer kind, answer text, notices) and the "new chat" reset event
+  - writes through `asyncio.to_thread` so the event loop isn't blocked
+- File names use a short SHA-256 hash of the session cookie, never the cookie itself.
+
+**Changes to existing files**
+- `app/config.py`: added `LOG_DIR` (`logs/`), `SESSION_LOG_DIR` (`logs/sessions/`) and `APP_LOG_FILE` (`logs/app.log`).
+- `app/logging_config.py`: added a rotating `logs/app.log` file handler (5 MB × 3 backups). It goes through the same redacting filter as the console.
+- `app/main.py`: on startup, creates `logs/` and `logs/sessions/` if they're missing, sets up the file log and passes a `TranscriptLogger` to the pipeline. `/api/chat` and `/api/reset` pass their endpoint (`POST /api/chat`, `POST /api/reset`) to the pipeline.
+- `app/chat/pipeline.py`: builds a `TurnTrace` for each turn, records Gemini and MCP calls and guardrail blocks, and writes the transcript entry while holding the session lock. Added `reset()`, which logs a closing entry before dropping the conversation; the next message starts a new log file.
+- `app/chat/session.py`: `Conversation` now tracks `turn_count` and `log_path`. `SessionStore.reset` was replaced by `pop`.
+- `.gitignore`: added `logs/`.
+
+**Privacy decision:** "user inputs" are logged in their **redacted** form, the same text Gemini sees. Card numbers, CVV, OTP, PIN, passwords, Aadhaar, PAN and similar are never written to disk; pincodes and income stay, because eligibility checks need them.
+
+**Verification:** I ran only `compileall` and `import app.main`, and both passed. There was no server launch and no Gemini or MCP calls. Importing the app doesn't create `logs/`; the folder is created when the server starts.
+
+**Documentation**
+- `README.md`: added step 7 to setup (check the logs) and stage 10 (session transcript) to the pipeline. Rewrote the Logging section to cover the folder layout, what each session file contains, file naming, an example entry and `app.log`. Added `logs/`, `transcript.py` and `inline_text.md` to the folder structure and its tables.
+- `inline_text.md`: added this exchange.

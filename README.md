@@ -47,12 +47,16 @@ A web chatbot that helps Indian users choose credit cards based on their spendin
 
 6. **Open the chatbot** at http://127.0.0.1:8000
 
+7. **Check the logs** in `logs/`. The folder is created automatically on first startup: `logs/app.log` holds the application log, and `logs/sessions/` holds one transcript file per chat session.
+
+   > **Note on `logs_failure_example/`:** The `logs_failure_example/` directory contains sample logs from failure testing to illustrate how logs will look after running the app. It has nothing to do with the running of the app and is just an example.
+
 ### Useful endpoints
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/` | GET | Chat UI |
 | `/api/chat` | POST | `{"message": "..."}` → `{"reply", "kind", "tools_used", "notices"}` |
-| `/api/reset` | POST | Clears the current conversation |
+| `/api/reset` | POST | Clears the current conversation (closes its session log) |
 | `/health` | GET | `{"status": "ok", "configured": true/false}` (never shows secrets) |
 
 > Conversations are stored in memory, so run a **single worker process**.
@@ -75,7 +79,8 @@ User message
   ├─7─ Live Great.cards MCP call          (one lazily opened session per turn)
   │      └── results go back to Gemini; up to 4 tool calls per turn
   ├─8─ Grounded answer from Gemini
-  └─9─ Output guardrails                  (₹ figure verification, approval & tax filters, disclaimers)
+  ├─9─ Output guardrails                  (₹ figure verification, approval & tax filters, disclaimers)
+  └─10─ Session transcript                (turn appended to logs/sessions/<session>.log)
   │
 Reply shown in the web UI (with "Source" tags and privacy notices)
 ```
@@ -132,6 +137,8 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
    - **Disclaimers:** an approval or tax disclaimer is added when relevant.
    - **Final redaction:** the final text is redacted once more as a last defence.
 
+10. **Session transcript** (`chat/transcript.py`): the turn is appended to the session's log file. This covers the redacted user message, the endpoint, Gemini and MCP calls, and the final answer. See [Logging](#logging).
+
 ### Conversation state
 - Each browser gets an opaque, HttpOnly `gc_session` cookie.
 - History is stored per session, in redacted form only, and capped at 12 messages.
@@ -140,8 +147,52 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
 - Sessions expire after 1 hour, and the store is capped at 1000 sessions.
 
 ### Logging
-- Logs record metadata only: message length, redaction categories, tool names and argument *field names*.
-- A logging filter redacts personal data and masks the API key and MCP URL in every log record, including tracebacks.
+All logs go into the project's `logs/` folder. The app creates the folder on startup if it doesn't exist, and `logs/` is listed in `.gitignore`, so logs are never committed.
+
+> **Note on `logs_failure_example/`:** The `logs_failure_example/` directory contains logs from failure testing and is just an example of how logs will look after running the app. It has nothing to do with the running of the app and is strictly an example.
+
+```
+logs/
+├── app.log                                   application log (rotates at 5 MB, keeps 3 backups)
+└── sessions/
+    ├── session_20261015-213000_ab12cd34ef56_4821.log
+    └── session_20261015-214512_9f3e01c2aa47_1307.log
+```
+
+**1. Session transcripts (`logs/sessions/`)**
+
+Every chat session gets its own log file, created on the session's first message. Each turn records:
+- turn number, timestamp, the **HTTP endpoint** used (e.g. `POST /api/chat`) and the response time
+- the **user's message** (after redaction, so card numbers, CVV, OTP, Aadhaar and similar never reach disk)
+- which kinds of sensitive data were redacted, and whether a local guardrail blocked the message
+- **Gemini API** usage: the number of `generateContent` calls and the model name
+- every **MCP tool call**, with its arguments and status: `ok`, `error returned by tool`, `rejected: schema validation failed`, `rejected: values not provided by the user` or `failed: MCP server unavailable`
+- the **chatbot's answer**, its kind (`local`, `clarification`, `answer`, `blocked` or `error`) and any privacy notices
+
+Clicking **New chat** (`POST /api/reset`) writes a closing entry to the current file, and the next message starts a new file.
+
+**File names**
+- Format: `session_<start time>_<session tag>_<suffix>.log`.
+- **Session tag:** a short one-way hash of the session cookie. The cookie value itself is never written to disk.
+- **Suffix:** keeps two conversations started in the same second in separate files.
+
+Example entry:
+```
+---- Turn 2 | 2026-10-15 21:31:02 | POST /api/chat | 3184 ms ----
+USER:
+    I spend 8000 on Amazon and 3000 on Swiggy every month
+Gemini API: 2 generateContent call(s) [gemini-2.5-flash-lite]
+MCP tools:
+    - recommend_cards {"amazon_spends": 8000, "online_food_ordering": 3000} -> ok
+ASSISTANT [answer]:
+    ...
+```
+
+**2. Application log (`logs/app.log`)**
+
+This file mirrors the console log: startup, tool catalog loading, warnings and errors.
+- It records metadata only: message length, redaction categories, tool names and argument *field names*.
+- A logging filter redacts personal data and masks the API key and MCP URL in every record (console and file), including tracebacks.
 - Transport libraries are kept at WARNING level so request URLs are not logged.
 
 ---
@@ -160,7 +211,8 @@ great-cards/
 │   │   ├── __init__.py
 │   │   ├── intents.py
 │   │   ├── pipeline.py
-│   │   └── session.py
+│   │   ├── session.py
+│   │   └── transcript.py
 │   ├── llm/
 │   │   ├── __init__.py
 │   │   ├── gemini.py
@@ -181,6 +233,11 @@ great-cards/
 │       └── js/chat.js
 ├── data/
 │   └── mcp_tools.json
+├── logs/                     (created on startup, git-ignored)
+│   ├── app.log
+│   └── sessions/
+│       └── session_<time>_<tag>_<suffix>.log
+├── logs_failure_example/     (example failure testing logs; not used at runtime)
 ├── venv/
 ├── .env
 ├── .env.example
@@ -194,26 +251,30 @@ great-cards/
 |---|---|
 | `app/` | All application code (Python package). |
 | `data/mcp_tools.json` | Offline snapshot of the MCP tool descriptions and schemas. **Reference only:** the app always uses the live schemas from the server at runtime. |
+| `logs/` | Runtime logs, created automatically on startup and git-ignored: `app.log` (application log) and `sessions/` (one transcript file per chat session). See [Logging](#logging). |
+| `logs_failure_example/` | Contains logs from failure testing as an example of how logs will look after running the app. It has nothing to do with the running of the app and is just an example. |
 | `venv/` | The existing Python virtual environment. |
 | `.env` | Your real configuration and secrets (never committed or logged). |
 | `.env.example` | Template listing the required environment variables. |
-| `.gitignore` | Keeps `.env`, `venv/` and Python caches out of git. |
+| `.gitignore` | Keeps `.env`, `venv/`, `logs/` and Python caches out of git. |
+| `inline_text.md` | Log of the development conversation used to build this project. |
 | `requirements.txt` | Python dependencies (FastAPI, Uvicorn, Jinja2, python-dotenv, Pydantic, httpx, mcp, google-genai, jsonschema). |
 
 ### `app/` (top level)
 | File | Responsibility |
 |---|---|
-| `main.py` | Creates the FastAPI app. On startup it builds the Gemini client, the MCP gateway (and starts loading the tool catalog in the background), the session store and the pipeline; on shutdown it closes them. Also defines the routes (`/`, `/api/chat`, `/api/reset`, `/health`), the session cookie, security headers (CSP and others) and the validation-error handler. |
-| `config.py` | Loads `.env` without overriding real environment variables, treats unfilled placeholders as missing, and lists missing variables by name only. Also holds the fixed limits: message length, tool steps, history size, session TTL, MCP timeout. |
+| `main.py` | Creates the FastAPI app. On startup it creates `logs/` if it's missing, sets up logging and the session transcript logger, and builds the Gemini client, the MCP gateway (and starts loading the tool catalog in the background), the session store and the pipeline; on shutdown it closes them. Also defines the routes (`/`, `/api/chat`, `/api/reset`, `/health`), the session cookie, security headers (CSP and others) and the validation-error handler. |
+| `config.py` | Loads `.env` without overriding real environment variables, treats unfilled placeholders as missing, and lists missing variables by name only. Also holds the fixed limits (message length, tool steps, history size, session TTL, MCP timeout) and the log paths (`LOG_DIR`, `SESSION_LOG_DIR`, `APP_LOG_FILE`). |
 | `schemas.py` | Pydantic models for the chat request and response. |
-| `logging_config.py` | Logging setup plus `RedactingFilter`, which removes personal data and secrets from every log record. |
+| `logging_config.py` | Logging setup: console output plus a rotating `logs/app.log`, and `RedactingFilter`, which removes personal data and secrets from every log record. |
 
 ### `app/chat/`: conversation flow
 | File | Responsibility |
 |---|---|
 | `pipeline.py` | `ChatPipeline`, which runs the full flow for one turn (stages 1–9 above): redaction, local intents, guardrails, the Gemini tool loop, argument validation, MCP execution, figure grounding and output guardrails. |
 | `intents.py` | Regex-based small talk (greetings, help, thanks, bye) answered locally. |
-| `session.py` | `Conversation` (redacted history, evidence figures, lock) and `SessionStore` (expiry, size cap, eviction of least-recently-used sessions). |
+| `session.py` | `Conversation` (redacted history, evidence figures, lock, turn count, transcript file path) and `SessionStore` (expiry, size cap, eviction of least-recently-used sessions). |
+| `transcript.py` | `TurnTrace` (collects the endpoint, Gemini calls, MCP calls and guardrail outcome for one turn) and `TranscriptLogger` (creates a log file per chat session and appends each turn and the reset event, writing off the event loop). |
 
 ### `app/llm/`: Gemini integration
 | File | Responsibility |

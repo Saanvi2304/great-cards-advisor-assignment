@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,6 +18,7 @@ from google.genai import types
 
 from app.chat.intents import match_small_talk
 from app.chat.session import Conversation, SessionStore
+from app.chat.transcript import TranscriptLogger, TurnTrace
 from app.config import MAX_TOOL_STEPS
 from app.llm import gemini
 from app.llm.gemini import GeminiClient, LLMError
@@ -66,25 +68,41 @@ def _clean_input(message: str) -> str:
 
 
 class ChatPipeline:
-    def __init__(self, sessions: SessionStore, llm: GeminiClient | None, tools: McpToolGateway | None):
+    def __init__(self, sessions: SessionStore, llm: GeminiClient | None, tools: McpToolGateway | None,
+                 transcripts: TranscriptLogger | None = None):
         self._sessions = sessions
         self._llm = llm
         self._tools = tools
+        self._transcripts = transcripts
 
-    async def handle(self, session_id: str, message: str) -> ChatReply:
+    async def handle(self, session_id: str, message: str, endpoint: str = "POST /api/chat") -> ChatReply:
+        started = time.perf_counter()
         redaction = redact(_clean_input(message))
         logger.info("Turn received: %d chars, redacted=%s", len(redaction.text), list(redaction.findings) or "none")
+        trace = TurnTrace(endpoint=endpoint, redacted=redaction.findings)
 
         conversation = self._sessions.get(session_id)
         async with conversation.lock:
-            reply, history_text = await self._respond(conversation, redaction.text, redaction.critical)
+            reply, history_text = await self._respond(conversation, redaction.text, redaction.critical, trace)
             if redaction.findings:
                 reply.notices.insert(0, PRIVACY_NOTICE.format(", ".join(redaction.findings)))
             conversation.add_exchange(history_text, reply.reply)
+            if self._transcripts:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                await self._transcripts.log_turn(conversation, session_id, trace, redaction.text, reply, elapsed_ms)
         logger.info("Turn answered: kind=%s tools=%s", reply.kind, reply.tools_used or "none")
         return reply
 
-    async def _respond(self, conversation: Conversation, text: str, critical: bool) -> tuple[ChatReply, str]:
+    async def reset(self, session_id: str, endpoint: str = "POST /api/reset") -> None:
+        """Start a new conversation; the old transcript is closed and the next turn opens a new file."""
+        conversation = self._sessions.pop(session_id)
+        if conversation and self._transcripts:
+            async with conversation.lock:
+                await self._transcripts.log_event(
+                    conversation, endpoint, "User started a new chat. This session log is closed.")
+
+    async def _respond(self, conversation: Conversation, text: str, critical: bool,
+                       trace: TurnTrace) -> tuple[ChatReply, str]:
         """Return the reply and the (redacted) user text to keep in history."""
         if critical and not has_meaningful_content(text):
             return ChatReply(SENSITIVE_ONLY_REPLY, "local"), text
@@ -96,6 +114,7 @@ class ChatPipeline:
         check = check_input(text)
         if check.blocked:
             logger.info("Input blocked locally: %s", check.reason)
+            trace.blocked_reason = check.reason
             history_text = text if check.reason in ("off_topic", "tax_advice") else WITHHELD_HISTORY_TEXT
             return ChatReply(check.reply, "blocked"), history_text
 
@@ -103,14 +122,15 @@ class ChatPipeline:
             return ChatReply(NOT_CONFIGURED_REPLY, "error"), text
 
         try:
-            return await self._run_agent(conversation, text, check), text
+            return await self._run_agent(conversation, text, check, trace), text
         except LLMError as exc:
             return ChatReply(exc.user_message, "error"), text
         except ToolServiceError:
             logger.warning("MCP server unavailable for this turn")
             return ChatReply(TOOLS_UNAVAILABLE_REPLY, "error"), text
 
-    async def _run_agent(self, conversation: Conversation, text: str, check: InputCheck) -> ChatReply:
+    async def _run_agent(self, conversation: Conversation, text: str, check: InputCheck,
+                         trace: TurnTrace) -> ChatReply:
         assert self._llm is not None and self._tools is not None
         catalog = await self._tools.catalog()
         flags = [name for name in ("approval_question", "mentions_tax") if getattr(check, name)]
@@ -131,6 +151,7 @@ class ChatPipeline:
         draft = ""
         async with self._tools.connection() as conn:
             for step in range(MAX_TOOL_STEPS + 1):
+                trace.llm_calls += 1
                 response = await self._llm.generate(
                     contents, system_instruction=system, tool=tool,
                     allow_tool_calls=step < MAX_TOOL_STEPS,
@@ -147,7 +168,7 @@ class ChatPipeline:
                         if question:
                             return self._finish(question, "clarification", tools_used, check,
                                                 self._allowed_figures(conversation, user_text))
-                    outcome = await self._execute(conn, catalog, call, user_text)
+                    outcome = await self._execute(conn, catalog, call, user_text, trace)
                     if outcome.called:
                         tools_used.append(call.name)
                         conversation.add_evidence(numbers_in(outcome.evidence_text))
@@ -164,6 +185,7 @@ class ChatPipeline:
             contents += [gemini.model_content(draft),
                          gemini.user_content(REPAIR_PROMPT.format(figures=", ".join(unsupported)))]
             try:
+                trace.llm_calls += 1
                 revised = gemini.response_text(await self._llm.generate(
                     contents, system_instruction=system, tool=tool, allow_tool_calls=False))
                 draft = revised or draft
@@ -188,22 +210,25 @@ class ChatPipeline:
         return ChatReply(text or NO_ANSWER_REPLY, kind, tools_used)
 
     async def _execute(self, conn: ToolConnection, catalog: ToolCatalog, call: types.FunctionCall,
-                       user_text: str) -> _ToolOutcome:
+                       user_text: str, trace: TurnTrace) -> _ToolOutcome:
         name = call.name or ""
         spec = catalog.get(name)
         if spec is None:
             logger.info("Rejected call to unavailable tool %r", name)
+            trace.record_mcp(name, {}, "rejected: tool not exposed")
             return _ToolOutcome({"error": f"Tool '{name}' is not available. Use only the declared tools."})
 
         args, errors = prepare_arguments(spec, dict(call.args or {}))
         if errors:
             logger.info("Rejected %s: %d schema error(s)", name, len(errors))
+            trace.record_mcp(name, args, "rejected: schema validation failed")
             return _ToolOutcome({"error": "Invalid arguments: " + " | ".join(errors)
                                  + " Fix them, or ask the user for the missing information."})
 
         problem = grounding_problem(name, args, user_text)
         if problem:
             logger.info("Rejected %s: arguments not grounded in user input", name)
+            trace.record_mcp(name, args, "rejected: values not provided by the user")
             return _ToolOutcome({"error": problem})
 
         logger.info("Calling MCP tool %s with fields %s", name, sorted(args))
@@ -211,8 +236,11 @@ class ChatPipeline:
             result = await conn.call(name, args)
         except ToolServiceError as exc:
             logger.warning("%s", exc)
+            trace.record_mcp(name, args, "failed: MCP server unavailable")
             return _ToolOutcome({"error": "The Great.cards service failed for this request. Tell the user the "
                                           "data is temporarily unavailable; do not invent any card data."})
         if not result.ok:
+            trace.record_mcp(name, args, "error returned by tool")
             return _ToolOutcome({"error": result.data}, called=True)
+        trace.record_mcp(name, args, "ok")
         return _ToolOutcome({"result": result.data}, called=True, evidence_text=result.text)

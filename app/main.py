@@ -16,8 +16,9 @@ from fastapi.templating import Jinja2Templates
 
 from app.chat.pipeline import ChatPipeline
 from app.chat.session import SessionStore
+from app.chat.transcript import TranscriptLogger
 from app.config import (
-    APP_DIR, HISTORY_MESSAGES, MAX_MESSAGE_CHARS, MAX_SESSIONS, MCP_TIMEOUT_SECONDS, SESSION_TTL_SECONDS,
+    APP_DIR, APP_LOG_FILE, HISTORY_MESSAGES, LOG_DIR, SESSION_LOG_DIR, MAX_MESSAGE_CHARS, MAX_SESSIONS, MCP_TIMEOUT_SECONDS, SESSION_TTL_SECONDS,
     get_settings,
 )
 from app.llm.gemini import GeminiClient
@@ -43,7 +44,10 @@ _SECURITY_HEADERS = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    configure_logging(settings.secrets)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)  # create logs/ if the project doesn't have it yet
+    configure_logging(settings.secrets, APP_LOG_FILE)
+    transcripts = TranscriptLogger(SESSION_LOG_DIR, settings.llm_model)
+    transcripts.ensure_directory()
     llm: GeminiClient | None = None
     tools: McpToolGateway | None = None
     warm_up: asyncio.Task | None = None
@@ -57,8 +61,7 @@ async def lifespan(app: FastAPI):
         warm_up = asyncio.create_task(tools.warm_up())  # load live tool schemas without blocking startup
 
     sessions = SessionStore(SESSION_TTL_SECONDS, MAX_SESSIONS, HISTORY_MESSAGES)
-    app.state.pipeline = ChatPipeline(sessions, llm, tools)
-    app.state.sessions = sessions
+    app.state.pipeline = ChatPipeline(sessions, llm, tools, transcripts)
     app.state.configured = not problems
     try:
         yield
@@ -118,7 +121,7 @@ async def chat(payload: ChatRequest, request: Request, response: Response) -> Ch
     session_id = _session_id(request, response)
     pipeline: ChatPipeline = request.app.state.pipeline
     try:
-        reply = await pipeline.handle(session_id, payload.message)
+        reply = await pipeline.handle(session_id, payload.message, f"{request.method} {request.url.path}")
     except Exception:
         logger.exception("Unexpected error while handling a chat turn")
         return ChatResponse(reply="Something went wrong on my side. Please try again.", kind="error")
@@ -128,7 +131,8 @@ async def chat(payload: ChatRequest, request: Request, response: Response) -> Ch
 @app.post("/api/reset", status_code=204)
 async def reset(request: Request) -> Response:
     response = Response(status_code=204)
-    request.app.state.sessions.reset(_session_id(request, response))
+    pipeline: ChatPipeline = request.app.state.pipeline
+    await pipeline.reset(_session_id(request, response), f"{request.method} {request.url.path}")
     return response
 
 

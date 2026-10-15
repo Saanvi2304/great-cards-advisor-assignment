@@ -10,6 +10,7 @@ import asyncio
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 MAX_EVIDENCE_NUMBERS = 20_000
 
@@ -21,11 +22,14 @@ class Conversation:
     evidence: set[float] = field(default_factory=set)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_seen: float = field(default_factory=time.monotonic)
+    turn_count: int = 0
+    log_path: Path | None = None   # this conversation's transcript file, created on the first turn
 
     def __post_init__(self) -> None:
         self.history = deque(maxlen=self.max_messages)
 
     def add_exchange(self, user_text: str, assistant_text: str) -> None:
+        self.turn_count += 1
         self.history.append(("user", user_text))
         self.history.append(("model", assistant_text))
 
@@ -55,8 +59,9 @@ class SessionStore:
         self._sessions.move_to_end(session_id)
         return conversation
 
-    def reset(self, session_id: str) -> None:
-        self._sessions.pop(session_id, None)
+    def pop(self, session_id: str) -> Conversation | None:
+        """Remove and return a conversation (used when the user starts a new chat)."""
+        return self._sessions.pop(session_id, None)
 
     def _prune(self) -> None:
         cutoff = time.monotonic() - self._ttl
