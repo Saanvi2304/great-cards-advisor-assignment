@@ -1,0 +1,73 @@
+2026-10-15 22:36:30,036 INFO app.tools.client: Loaded 14 MCP tools (advisor context: 38706 chars)
+2026-10-15 22:39:30,887 INFO app.tools.client: Loaded 14 MCP tools (advisor context: 38706 chars)
+2026-10-15 22:41:07,779 INFO app.tools.client: Loaded 14 MCP tools (advisor context: 38706 chars)
+2026-10-15 22:51:01,780 INFO app.chat.pipeline: Turn received: 15 chars, redacted=none
+2026-10-15 22:51:08,390 INFO app.chat.pipeline: Turn answered: kind=answer tools=none
+2026-10-15 22:51:28,917 INFO app.chat.pipeline: Turn received: 125 chars, redacted=none
+2026-10-15 22:51:30,586 INFO app.chat.pipeline: Calling MCP tool recommend_cards with fields ['amazon_spends']
+2026-10-15 22:51:39,558 INFO app.chat.pipeline: Turn answered: kind=answer tools=['recommend_cards']
+2026-10-15 22:52:05,259 INFO app.chat.pipeline: Turn received: 174 chars, redacted=none
+2026-10-15 22:52:08,169 INFO app.chat.pipeline: Calling MCP tool recommend_cards with fields ['dining_or_going_out', 'electricity_bills', 'grocery_spends_online', 'other_online_spends', 'response_format', 'top_n']
+2026-10-15 22:52:18,348 INFO app.chat.pipeline: Turn answered: kind=answer tools=['recommend_cards']
+2026-10-15 22:52:34,555 INFO app.chat.pipeline: Turn received: 231 chars, redacted=none
+2026-10-15 22:52:36,693 INFO app.chat.pipeline: Rejected recommend_cards: 1 schema error(s)
+2026-10-15 22:52:39,306 INFO app.chat.pipeline: Calling MCP tool recommend_cards with fields ['dining_or_going_out', 'domestic_lounge_usage_quarterly', 'flights_annual', 'grocery_spends_online', 'hotels_annual', 'online_food_ordering', 'response_format', 'top_n']
+2026-10-15 22:52:47,230 INFO app.chat.pipeline: Turn answered: kind=answer tools=['recommend_cards']
+2026-10-15 22:53:00,885 INFO app.chat.pipeline: Turn received: 199 chars, redacted=none
+2026-10-15 22:53:06,747 INFO app.chat.pipeline: Calling MCP tool recommend_cards with fields ['domestic_lounge_usage_quarterly', 'flights_annual', 'hotels_annual']
+2026-10-15 22:53:19,590 INFO app.chat.pipeline: Turn answered: kind=answer tools=['recommend_cards']
+2026-10-15 22:53:30,418 INFO app.chat.pipeline: Turn received: 179 chars, redacted=none
+2026-10-15 22:53:38,826 INFO app.chat.pipeline: Calling MCP tool recommend_cards with fields ['domestic_lounge_usage_quarterly', 'flights_annual', 'hotels_annual', 'response_format', 'top_n']
+2026-10-15 22:53:48,617 INFO app.chat.pipeline: Calling MCP tool list_cards with fields ['category']
+2026-10-15 22:53:54,653 INFO app.chat.pipeline: Calling MCP tool get_card_details with fields ['card_alias']
+2026-10-15 22:54:02,208 INFO app.chat.pipeline: Turn answered: kind=answer tools=['recommend_cards', 'list_cards', 'get_card_details']
+2026-10-15 22:54:14,793 INFO app.chat.pipeline: Turn received: 167 chars, redacted=none
+2026-10-15 22:54:20,362 INFO app.chat.pipeline: Calling MCP tool recommend_cards with fields ['online_food_ordering']
+2026-10-15 22:54:30,237 INFO app.chat.pipeline: Turn answered: kind=answer tools=['recommend_cards']
+2026-10-15 22:54:37,484 INFO app.chat.pipeline: Turn received: 141 chars, redacted=none
+2026-10-15 22:54:43,408 INFO app.chat.pipeline: Calling MCP tool recommend_cards with fields ['fuel', 'response_format']
+2026-10-15 22:54:53,411 INFO app.chat.pipeline: Turn answered: kind=answer tools=['recommend_cards']
+2026-10-15 22:55:04,738 INFO app.chat.pipeline: Turn received: 149 chars, redacted=none
+2026-10-15 22:55:13,725 INFO app.chat.pipeline: Calling MCP tool list_cards with fields ['card_networks', 'limit']
+2026-10-15 22:55:22,250 INFO app.chat.pipeline: Calling MCP tool list_cards with fields ['card_networks', 'limit']
+2026-10-15 22:55:25,268 INFO app.chat.pipeline: Turn answered: kind=answer tools=['list_cards', 'list_cards']
+2026-10-15 22:55:28,374 INFO app.chat.pipeline: Turn received: 178 chars, redacted=none
+2026-10-15 22:55:32,656 INFO app.chat.pipeline: Calling MCP tool compare_cards with fields ['card_aliases']
+2026-10-15 22:55:36,754 INFO app.chat.pipeline: Calling MCP tool whatsapp_resolve_card_or_category with fields ['phrase']
+2026-10-15 22:55:37,289 INFO app.chat.pipeline: Calling MCP tool whatsapp_resolve_card_or_category with fields ['phrase']
+2026-10-15 22:55:43,427 INFO app.chat.pipeline: Calling MCP tool compare_cards with fields ['card_aliases']
+2026-10-15 22:55:46,420 WARNING app.chat.pipeline: Draft had 1 unsupported rupee figure(s); requesting a grounded rewrite
+2026-10-15 22:55:53,041 INFO app.chat.pipeline: Turn answered: kind=answer tools=['compare_cards', 'whatsapp_resolve_card_or_category', 'whatsapp_resolve_card_or_category', 'compare_cards']
+2026-10-15 22:56:20,405 INFO app.chat.pipeline: Turn received: 139 chars, redacted=none
+2026-10-15 22:56:24,174 INFO app.chat.pipeline: Calling MCP tool get_card_details with fields ['card_alias']
+2026-10-15 22:56:27,998 INFO app.chat.pipeline: Turn answered: kind=answer tools=['get_card_details']
+2026-10-15 22:56:46,618 INFO app.chat.pipeline: Turn received: 253 chars, redacted=none
+2026-10-15 22:56:50,664 INFO app.chat.pipeline: Turn answered: kind=answer tools=none
+2026-10-15 22:57:10,420 INFO app.chat.pipeline: Turn received: 184 chars, redacted=none
+2026-10-15 22:57:13,768 INFO app.chat.pipeline: Turn answered: kind=answer tools=none
+2026-10-15 22:57:37,297 INFO app.chat.pipeline: Turn received: 211 chars, redacted=none
+2026-10-15 22:57:39,539 INFO app.chat.pipeline: Calling MCP tool list_cards with fields ['annual_fees', 'limit']
+2026-10-15 22:57:48,035 INFO app.chat.pipeline: Calling MCP tool list_cards with fields ['free_cards', 'limit']
+2026-10-15 22:57:51,281 INFO app.chat.pipeline: Calling MCP tool get_card_details with fields ['card_alias']
+2026-10-15 22:57:54,363 INFO app.chat.pipeline: Turn answered: kind=answer tools=['list_cards', 'list_cards', 'get_card_details']
+2026-10-15 22:58:16,067 INFO app.chat.pipeline: Turn received: 6 chars, redacted=none
+2026-10-15 22:58:23,873 INFO app.chat.pipeline: Calling MCP tool check_eligibility with fields ['annual_income', 'employment_status', 'pincode']
+2026-10-15 22:58:34,312 INFO app.chat.pipeline: Calling MCP tool list_cards with fields ['annual_fees', 'limit']
+2026-10-15 22:58:37,330 INFO app.chat.pipeline: Turn answered: kind=answer tools=['check_eligibility', 'list_cards']
+2026-10-15 22:58:56,658 INFO app.chat.pipeline: Turn received: 82 chars, redacted=none
+2026-10-15 22:58:58,469 INFO app.chat.pipeline: Calling MCP tool recommend_cards with fields ['amazon_spends', 'grocery_spends_online', 'response_format']
+2026-10-15 22:59:06,745 INFO app.chat.pipeline: Turn answered: kind=answer tools=['recommend_cards']
+2026-10-15 22:59:18,038 INFO app.chat.pipeline: Turn received: 176 chars, redacted=none
+2026-10-15 22:59:20,109 INFO app.chat.pipeline: Turn answered: kind=answer tools=none
+2026-10-15 22:59:38,929 INFO app.chat.pipeline: Turn received: 23 chars, redacted=none
+2026-10-15 22:59:38,930 INFO app.chat.pipeline: Input blocked locally: off_topic
+2026-10-15 22:59:38,932 INFO app.chat.pipeline: Turn answered: kind=blocked tools=none
+2026-10-15 22:59:48,544 INFO app.chat.pipeline: Turn received: 89 chars, redacted=none
+2026-10-15 22:59:48,545 INFO app.chat.pipeline: Input blocked locally: off_topic
+2026-10-15 22:59:48,546 INFO app.chat.pipeline: Turn answered: kind=blocked tools=none
+2026-10-15 23:00:00,065 INFO app.chat.pipeline: Turn received: 153 chars, redacted=none
+2026-10-15 23:00:02,568 INFO app.chat.pipeline: Turn answered: kind=answer tools=none
+2026-10-15 23:00:29,751 INFO app.chat.pipeline: Turn received: 142 chars, redacted=none
+2026-10-15 23:00:31,870 INFO app.chat.pipeline: Turn answered: kind=answer tools=none
+2026-10-15 23:01:19,667 INFO app.chat.pipeline: Turn received: 119 chars, redacted=['CVV', 'Aadhaar number']
+2026-10-15 23:01:24,227 INFO app.chat.pipeline: Turn answered: kind=answer tools=none
