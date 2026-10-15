@@ -1,0 +1,255 @@
+# Great.cards Credit Card Advisor
+
+A web chatbot that helps Indian users choose credit cards based on their spending, rewards, fees and eligibility. It is built with **Python, FastAPI and HTML templates**. **Gemini** works out what the user wants and picks a tool, and the **live Great.cards MCP server** supplies the card data.
+
+---
+
+## 1. Setup
+
+### Prerequisites
+- Windows with Python 3.13 (the project's `venv` was created with 3.13.5)
+- A Gemini API key
+- The Great.cards MCP server URL
+
+### Steps
+
+1. **Open a terminal in the project folder**
+   ```powershell
+   cd D:\great-cards
+   ```
+
+2. **Activate the existing virtual environment**
+   ```powershell
+   .\venv\Scripts\Activate.ps1
+   ```
+   If you are in Git Bash, run `source venv/Scripts/activate` instead.
+
+3. **Install the dependencies.** They are already installed in `venv`, so this step is only needed on a fresh environment.
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+4. **Configure the environment.** Copy `.env.example` to `.env` (if you haven't already) and fill in the real values:
+   ```env
+   MCP_URL="<your Great.cards MCP server URL>"
+   LLM_PROVIDER=gemini
+   LLM_MODEL=gemini-2.5-flash-lite
+   GEMINI_API_KEY="<your Gemini API key>"
+   LLM_TIMEOUT_SECONDS=30
+   ```
+   - `.env` is listed in `.gitignore`, so never commit it.
+   - Values still set to the `PASTE YOUR ...` placeholders count as missing. In that case the page shows a "not configured" banner instead of crashing.
+
+5. **Start the server**
+   ```powershell
+   uvicorn app.main:app --reload
+   ```
+
+6. **Open the chatbot** at http://127.0.0.1:8000
+
+### Useful endpoints
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/` | GET | Chat UI |
+| `/api/chat` | POST | `{"message": "..."}` → `{"reply", "kind", "tools_used", "notices"}` |
+| `/api/reset` | POST | Clears the current conversation |
+| `/health` | GET | `{"status": "ok", "configured": true/false}` (never shows secrets) |
+
+> Conversations are stored in memory, so run a **single worker process**.
+
+---
+
+## 2. Chatbot pipeline
+
+Every user message passes through these stages in order. Each stage can answer early, so the later and more expensive stages (Gemini, MCP) only run when they are needed.
+
+```
+User message
+  │
+  ├─1─ Input cleaning & validation        (length 1–1000, Unicode normalised, control chars removed)
+  ├─2─ Sensitive-input redaction          (local, before anything leaves the server or is logged)
+  ├─3─ Local intent handling              (greetings / help / thanks / bye → instant reply, no LLM/MCP)
+  ├─4─ Input guardrails                   (injection, fraud, tax-only, obvious off-topic → local reply)
+  ├─5─ Gemini interprets & selects a tool (live MCP schemas + ask_clarification)
+  ├─6─ Argument validation                (live JSON Schema + "no guessed values" grounding rules)
+  ├─7─ Live Great.cards MCP call          (one lazily opened session per turn)
+  │      └── results go back to Gemini; up to 4 tool calls per turn
+  ├─8─ Grounded answer from Gemini
+  └─9─ Output guardrails                  (₹ figure verification, approval & tax filters, disclaimers)
+  │
+Reply shown in the web UI (with "Source" tags and privacy notices)
+```
+
+### Stage details
+
+1. **Input cleaning and validation:** `schemas.py` rejects empty messages and messages over 1000 characters. `pipeline.py` normalises Unicode and removes control characters.
+
+2. **Sensitive-input redaction** (`safety/redaction.py`)
+   - **Detected and redacted:** card numbers (checked with the Luhn checksum), CVV, OTP, PIN, passwords, bank account numbers, email, UPI ID, phone, Aadhaar, PAN, passport and date of birth.
+   - **Placeholders:** each value is replaced with a token such as `[REDACTED CARD NUMBER]`.
+   - **Where redacted text is used:** only the redacted text goes to Gemini, is stored in history or is written to logs.
+   - **Not redacted on purpose:** pincodes and income, because eligibility checks need them.
+   - **Mostly-secret messages:** if a message is mostly secrets, the bot replies locally with a safety warning.
+   - **Notice to the user:** the user is shown which kinds of data were removed.
+
+3. **Local intent handling** (`chat/intents.py`): messages that are entirely "Hi", "Hello", "help", "thanks", "bye" or similar get canned replies. No Gemini or MCP call is made.
+
+4. **Input guardrails** (`safety/guardrails.py`), enforced in code:
+   - **Prompt injection** ("ignore previous instructions", "reveal your prompt"): refused.
+   - **Fraud** (stolen cards, fake salary slips, bypassing KYC): refused.
+   - **Tax-only questions:** redirected to a tax professional.
+   - **Obvious off-topic requests** (jokes, Python code) with no credit-card words: a short redirect.
+   - **Flags for Gemini:** questions about approval odds, and tax mentions mixed into card questions, are passed on as flags so Gemini adds the right constraints.
+
+5. **Gemini selects a tool** (`llm/gemini.py`, `llm/prompts.py`)
+   - **Declarations:** Gemini receives function declarations built from the live MCP tool schemas, filtered by `tools/registry.py`.
+   - **Clarification tool:** a local `ask_clarification` tool lets Gemini ask a question instead of guessing.
+   - **Advisor playbook:** the `get_advisor_context` playbook is fetched once from the server and included in the system prompt as reference data.
+   - **Off-topic messages** that reach Gemini get a one-line redirect, with no tool call.
+
+6. **Argument validation** (`tools/registry.py`)
+   - **Parameter checks:** unknown or hidden parameters are rejected, and harmless type slips are fixed (for example `"5000"` becomes `5000`).
+   - **Schema validation:** arguments are validated with `jsonschema` against the server's real input schema.
+   - **Grounding rules:**
+     - `check_eligibility` requires a pincode that the user actually typed, and an income the user stated.
+     - `recommend_cards` requires spend amounts the user stated, not invented defaults.
+   - **On failure:** the error goes back to Gemini, which corrects the arguments or asks the user.
+
+7. **Live MCP call** (`tools/client.py`)
+   - **Connection:** one MCP session per chat turn, opened only when a tool is actually needed and always closed afterwards.
+   - **Transport:** streamable HTTP, or SSE if the URL ends in `/sse`.
+   - **Timeouts and errors:** timeouts are applied, and connection errors are converted into friendly messages.
+   - **Caching:** the tool catalog (live schemas) is cached for 30 minutes.
+
+8. **Grounded answer:** Gemini writes a conversational answer from the tool results only.
+
+9. **Output guardrails** (`safety/grounding.py`, `safety/guardrails.py`)
+   - **Unsupported figures:** every ₹ amount must match a number from MCP results or the user's own messages. Small display rounding and monthly↔annual conversion are allowed.
+     - If an amount doesn't match, Gemini is asked once to rewrite the answer.
+     - Anything still unsupported is replaced with `[amount not verified]`.
+   - **Approval promises:** sentences that promise approval (e.g. "guaranteed approval") are removed.
+   - **Tax advice:** sentences that give tax advice are removed.
+   - **Disclaimers:** an approval or tax disclaimer is added when relevant.
+   - **Final redaction:** the final text is redacted once more as a last defence.
+
+### Conversation state
+- Each browser gets an opaque, HttpOnly `gc_session` cookie.
+- History is stored per session, in redacted form only, and capped at 12 messages.
+- Each session also keeps the figures from its earlier tool results, so follow-up answers can quote them.
+- A per-session lock prevents overlapping turns.
+- Sessions expire after 1 hour, and the store is capped at 1000 sessions.
+
+### Logging
+- Logs record metadata only: message length, redaction categories, tool names and argument *field names*.
+- A logging filter redacts personal data and masks the API key and MCP URL in every log record, including tracebacks.
+- Transport libraries are kept at WARNING level so request URLs are not logged.
+
+---
+
+## 3. Folder structure
+
+```
+great-cards/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── config.py
+│   ├── schemas.py
+│   ├── logging_config.py
+│   ├── chat/
+│   │   ├── __init__.py
+│   │   ├── intents.py
+│   │   ├── pipeline.py
+│   │   └── session.py
+│   ├── llm/
+│   │   ├── __init__.py
+│   │   ├── gemini.py
+│   │   └── prompts.py
+│   ├── safety/
+│   │   ├── __init__.py
+│   │   ├── redaction.py
+│   │   ├── guardrails.py
+│   │   └── grounding.py
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   ├── client.py
+│   │   └── registry.py
+│   ├── templates/
+│   │   └── index.html
+│   └── static/
+│       ├── css/styles.css
+│       └── js/chat.js
+├── data/
+│   └── mcp_tools.json
+├── venv/
+├── .env
+├── .env.example
+├── .gitignore
+├── requirements.txt
+└── README.md
+```
+
+### Root
+| Path | Responsibility |
+|---|---|
+| `app/` | All application code (Python package). |
+| `data/mcp_tools.json` | Offline snapshot of the MCP tool descriptions and schemas. **Reference only:** the app always uses the live schemas from the server at runtime. |
+| `venv/` | The existing Python virtual environment. |
+| `.env` | Your real configuration and secrets (never committed or logged). |
+| `.env.example` | Template listing the required environment variables. |
+| `.gitignore` | Keeps `.env`, `venv/` and Python caches out of git. |
+| `requirements.txt` | Python dependencies (FastAPI, Uvicorn, Jinja2, python-dotenv, Pydantic, httpx, mcp, google-genai, jsonschema). |
+
+### `app/` (top level)
+| File | Responsibility |
+|---|---|
+| `main.py` | Creates the FastAPI app. On startup it builds the Gemini client, the MCP gateway (and starts loading the tool catalog in the background), the session store and the pipeline; on shutdown it closes them. Also defines the routes (`/`, `/api/chat`, `/api/reset`, `/health`), the session cookie, security headers (CSP and others) and the validation-error handler. |
+| `config.py` | Loads `.env` without overriding real environment variables, treats unfilled placeholders as missing, and lists missing variables by name only. Also holds the fixed limits: message length, tool steps, history size, session TTL, MCP timeout. |
+| `schemas.py` | Pydantic models for the chat request and response. |
+| `logging_config.py` | Logging setup plus `RedactingFilter`, which removes personal data and secrets from every log record. |
+
+### `app/chat/`: conversation flow
+| File | Responsibility |
+|---|---|
+| `pipeline.py` | `ChatPipeline`, which runs the full flow for one turn (stages 1–9 above): redaction, local intents, guardrails, the Gemini tool loop, argument validation, MCP execution, figure grounding and output guardrails. |
+| `intents.py` | Regex-based small talk (greetings, help, thanks, bye) answered locally. |
+| `session.py` | `Conversation` (redacted history, evidence figures, lock) and `SessionStore` (expiry, size cap, eviction of least-recently-used sessions). |
+
+### `app/llm/`: Gemini integration
+| File | Responsibility |
+|---|---|
+| `gemini.py` | Async `GeminiClient` (timeout from `LLM_TIMEOUT_SECONDS`, friendly error mapping). Converts MCP JSON Schemas into Gemini function declarations and provides helpers for messages and function calls. |
+| `prompts.py` | System prompt (scope, tool-selection guide, clarification rules, safety rules, style), the `ask_clarification` declaration and the prompt that asks Gemini to rewrite answers with unsupported figures. |
+
+### `app/safety/`: privacy and guardrails
+| File | Responsibility |
+|---|---|
+| `redaction.py` | Detects and redacts sensitive data; flags critical secrets (card number, CVV, OTP, PIN, password). |
+| `guardrails.py` | `check_input` (injection, fraud, tax, off-topic, approval questions) and `enforce_output` (removes approval promises and tax advice, adds disclaimers). |
+| `grounding.py` | Extracts numbers from evidence and checks or removes ₹ figures in answers that the evidence doesn't support. |
+
+### `app/tools/`: Great.cards MCP integration
+| File | Responsibility |
+|---|---|
+| `client.py` | `McpToolGateway`: opens MCP sessions (streamable HTTP or SSE), loads and caches the live tool catalog and advisor context, and runs tool calls with timeouts through a per-turn `ToolConnection`. |
+| `registry.py` | Lists which tools Gemini may use and which parameters are hidden, builds the schema shown to Gemini, cleans arguments, validates them with `jsonschema` against the live schema, and checks that values came from the user. |
+
+### `app/templates/` and `app/static/`: web UI
+| File | Responsibility |
+|---|---|
+| `templates/index.html` | Chat page: header with "New chat", welcome message, suggestion chips, message box, privacy footnote and "not configured" banner. |
+| `static/css/styles.css` | Clean, responsive styling (chat bubbles, tables, tags, notices, typing indicator). |
+| `static/js/chat.js` | Sends messages, shows a typing indicator, renders safe minimal markdown (everything escaped first: bold, lists, tables, links), shows "Source" tags and privacy notices, and handles reset. |
+
+### Exposed MCP tools
+| Tool | Used for |
+|---|---|
+| `recommend_cards` | Personalised ranking from the user's stated monthly spends |
+| `list_cards` | Browsing and filtering (category, lifetime free, network, fee range) |
+| `get_card_details` | Deep dive into one card |
+| `compare_cards` | Side-by-side comparison of 2–3 cards |
+| `check_eligibility` | Cards the user can apply for (pincode, income, employment) |
+| `generate_content_brief` | "Best cards for a category", "is a card worth the fee", bank rankings, upgrade paths |
+| `whatsapp_resolve_card_or_category` | Turning a card name the user typed into the exact card alias |
+
+`get_advisor_context` is loaded internally once. Diagnostic and duplicate tools are not exposed to Gemini.

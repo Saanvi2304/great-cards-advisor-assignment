@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Great.cards Credit Card Advisor</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">G</span>
+        <div>
+          <h1>Credit Card Advisor</h1>
+          <p>Powered by Great.cards data</p>
+        </div>
+      </div>
+      <button type="button" class="ghost-button" id="reset-button" title="Start a new conversation">New chat</button>
+    </header>
+
+    {% if not configured %}
+    <div class="banner banner-warning" role="alert">
+      The advisor isn't fully configured. Add the required values to <code>.env</code> and restart the server.
+    </div>
+    {% endif %}
+
+    <main class="chat" id="chat" aria-live="polite">
+      <div class="message bot" id="welcome">
+        <div class="bubble">
+          <p><strong>Hi! I'm your credit card advisor.</strong></p>
+          <p>Tell me how you spend each month and I'll find cards that fit, or ask about a specific card, a comparison, or your eligibility.</p>
+        </div>
+      </div>
+      <div class="suggestions" id="suggestions">
+        <button type="button" class="chip">Best card for ₹6,000 a month on fuel</button>
+        <button type="button" class="chip">Compare HDFC Regalia Gold and Axis Magnus</button>
+        <button type="button" class="chip">Show lifetime free cards for online shopping</button>
+        <button type="button" class="chip">Which cards can I get? I'm salaried earning 12 LPA, pincode 560001</button>
+      </div>
+    </main>
+
+    <form class="composer" id="composer" autocomplete="off">
+      <label for="message" class="visually-hidden">Your message</label>
+      <textarea id="message" name="message" rows="1" maxlength="{{ max_chars }}"
+                placeholder="Ask about credit cards, e.g. I spend ₹10k on Amazon and ₹3k on Swiggy monthly"></textarea>
+      <button type="submit" id="send-button" class="send-button" aria-label="Send message">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10.2 15 12 3.4 13.8z"/></svg>
+      </button>
+    </form>
+    <p class="footnote">
+      Never share card numbers, CVV, OTP, PINs, Aadhaar or PAN. Answers use Great.cards data and are not tax advice;
+      card approval is always at the bank's discretion.
+    </p>
+  </div>
+  <script src="{{ url_for('static', path='js/chat.js') }}" defer></script>
+</body>
+</html>
