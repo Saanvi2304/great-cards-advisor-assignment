@@ -8,7 +8,7 @@ import re
 import secrets
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Path, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,18 +18,21 @@ from app.chat.pipeline import ChatPipeline
 from app.chat.session import SessionStore
 from app.chat.transcript import TranscriptLogger
 from app.config import (
-    APP_DIR, APP_LOG_FILE, HISTORY_MESSAGES, LOG_DIR, SESSION_LOG_DIR, MAX_MESSAGE_CHARS, MAX_SESSIONS, MCP_TIMEOUT_SECONDS, SESSION_TTL_SECONDS,
-    get_settings,
+    APP_DIR, APP_LOG_FILE, COOKIE_MAX_AGE_SECONDS, HISTORY_MESSAGES, LOG_DIR, MAX_LISTED_CHATS, SESSION_LOG_DIR,
+    MAX_MESSAGE_CHARS, MAX_SESSIONS, MCP_TIMEOUT_SECONDS, SESSION_TTL_SECONDS, get_settings,
 )
 from app.llm.gemini import GeminiClient
 from app.logging_config import configure_logging
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import (
+    CHAT_ID_PATTERN, ChatHistory, ChatMessage, ChatRequest, ChatResponse, ChatSummary, ServiceStatus, StatusResponse,
+)
 from app.tools.client import McpToolGateway
 
 logger = logging.getLogger(__name__)
 
 SESSION_COOKIE = "gc_session"
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
+MCP_RETRY_SECONDS = 30   # how often a status poll may retry an unreachable MCP server
 _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -62,14 +65,19 @@ async def lifespan(app: FastAPI):
 
     sessions = SessionStore(SESSION_TTL_SECONDS, MAX_SESSIONS, HISTORY_MESSAGES)
     app.state.pipeline = ChatPipeline(sessions, llm, tools, transcripts)
+    app.state.transcripts = transcripts
+    app.state.llm = llm
+    app.state.tools = tools
+    app.state.retry_task = None
     app.state.configured = not problems
     try:
         yield
     finally:
-        if warm_up and not warm_up.done():
-            warm_up.cancel()
-            with suppress(asyncio.CancelledError):
-                await warm_up
+        for task in (warm_up, app.state.retry_task):
+            if task and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
         if llm:
             await llm.aclose()
 
@@ -93,13 +101,15 @@ def _session_id(request: Request, response: Response) -> str:
         session_id = secrets.token_urlsafe(32)
         response.set_cookie(
             SESSION_COOKIE, session_id, httponly=True, samesite="lax",
-            secure=request.url.scheme == "https", max_age=SESSION_TTL_SECONDS,
+            secure=request.url.scheme == "https", max_age=COOKIE_MAX_AGE_SECONDS,
         )
     return session_id
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    if any("chat_id" in error.get("loc", ()) for error in exc.errors()):
+        return JSONResponse(status_code=422, content={"detail": "This chat couldn't be identified. Please start a new chat."})
     return JSONResponse(
         status_code=422,
         content={"detail": f"Please enter a message between 1 and {MAX_MESSAGE_CHARS} characters."},
@@ -121,7 +131,8 @@ async def chat(payload: ChatRequest, request: Request, response: Response) -> Ch
     session_id = _session_id(request, response)
     pipeline: ChatPipeline = request.app.state.pipeline
     try:
-        reply = await pipeline.handle(session_id, payload.message, f"{request.method} {request.url.path}")
+        reply = await pipeline.handle(session_id, payload.message, f"{request.method} {request.url.path}",
+                                      payload.chat_id)
     except Exception:
         logger.exception("Unexpected error while handling a chat turn")
         return ChatResponse(reply="Something went wrong on my side. Please try again.", kind="error")
@@ -134,6 +145,54 @@ async def reset(request: Request) -> Response:
     pipeline: ChatPipeline = request.app.state.pipeline
     await pipeline.reset(_session_id(request, response), f"{request.method} {request.url.path}")
     return response
+
+
+@app.get("/api/conversations", response_model=list[ChatSummary])
+async def conversations(request: Request, response: Response) -> list[ChatSummary]:
+    """This browser's past chats, newest first, read from its session transcripts."""
+    chats = await request.app.state.transcripts.list_chats(_session_id(request, response), MAX_LISTED_CHATS)
+    return [ChatSummary(id=c.id, title=c.title, started=c.started, updated=c.updated, turns=len(c.turns))
+            for c in chats]
+
+
+@app.get("/api/conversations/{chat_id}", response_model=ChatHistory)
+async def conversation(request: Request, response: Response,
+                       chat_id: str = Path(pattern=CHAT_ID_PATTERN)) -> ChatHistory:
+    chat = await request.app.state.transcripts.load_chat(_session_id(request, response), chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    messages: list[ChatMessage] = []
+    for turn in chat.turns:
+        messages.append(ChatMessage(role="user", text=turn.user, time=turn.time))
+        messages.append(ChatMessage(role="assistant", text=turn.reply, kind=turn.kind, tools_used=turn.tools,
+                                    notices=turn.notices, time=turn.time))
+    return ChatHistory(id=chat.id, title=chat.title, started=chat.started, messages=messages)
+
+
+@app.get("/api/status", response_model=StatusResponse)
+async def status(request: Request) -> StatusResponse:
+    """Gemini and MCP health from the outcome of real calls; no extra Gemini requests are made."""
+    state = request.app.state
+    llm: GeminiClient | None = state.llm
+    tools: McpToolGateway | None = state.tools
+    if llm is None:
+        llm_status = ServiceStatus(state="off", label="Not configured", detail="Set the Gemini values in .env")
+    elif llm.last_error:
+        llm_status = ServiceStatus(state="degraded", label="Last call failed", detail=llm.last_error)
+    else:
+        llm_status = ServiceStatus(state="ready", label="Ready", detail=llm.model)
+
+    if tools is None:
+        mcp_status = ServiceStatus(state="off", label="Not configured", detail="Set MCP_URL in .env")
+    elif tools.loading or tools.reachable is None:
+        mcp_status = ServiceStatus(state="connecting", label="Connecting", detail="Loading Great.cards tools")
+    elif tools.reachable:
+        mcp_status = ServiceStatus(state="ready", label="Online", detail=f"{tools.tool_count} tools available")
+    else:
+        mcp_status = ServiceStatus(state="offline", label="Unreachable", detail="Retrying automatically")
+        if tools.retry_due(MCP_RETRY_SECONDS):
+            state.retry_task = asyncio.create_task(tools.recheck())
+    return StatusResponse(llm=llm_status, mcp=mcp_status)
 
 
 @app.get("/health")

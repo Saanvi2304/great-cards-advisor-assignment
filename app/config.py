@@ -19,7 +19,9 @@ APP_LOG_FILE = LOG_DIR / "app.log"           # application log (rotating)
 MAX_MESSAGE_CHARS = 1000
 MAX_TOOL_STEPS = 4            # MCP tool calls Gemini may chain within one turn
 HISTORY_MESSAGES = 12         # user + assistant messages replayed to Gemini
-SESSION_TTL_SECONDS = 60 * 60
+SESSION_TTL_SECONDS = 60 * 60       # in-memory conversation state
+COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60   # browser identity, so past chats stay listed in the sidebar
+MAX_LISTED_CHATS = 50         # most recent session logs shown in the sidebar
 MAX_SESSIONS = 1000
 MCP_TIMEOUT_SECONDS = 45.0
 

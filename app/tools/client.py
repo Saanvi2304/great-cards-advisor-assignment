@@ -77,7 +77,9 @@ class ToolConnection:
             )
         except Exception as exc:  # transport errors arrive as many types, incl. ExceptionGroup
             await self.aclose()
+            self._gateway.reachable = False
             raise ToolServiceError(f"MCP call to {name} failed ({type(exc).__name__})") from exc
+        self._gateway.reachable = True
         return _to_result(result)
 
     async def aclose(self) -> None:
@@ -97,6 +99,19 @@ class McpToolGateway:
         self._advisor_context = ""
         self._loaded_at = 0.0
         self._lock = asyncio.Lock()
+        self.reachable: bool | None = None   # outcome of the latest connection attempt (None = not tried yet)
+        self._last_attempt = 0.0
+
+    @property
+    def tool_count(self) -> int:
+        return len(self._catalog.exposed()) if self._catalog else 0
+
+    @property
+    def loading(self) -> bool:
+        return self._lock.locked()
+
+    def retry_due(self, after_seconds: float) -> bool:
+        return not self.loading and time.monotonic() - self._last_attempt >= after_seconds
 
     @property
     def advisor_context(self) -> str:
@@ -137,9 +152,12 @@ class McpToolGateway:
             return self._catalog  # type: ignore[return-value]
         async with self._lock:
             if self._catalog is None or time.monotonic() - self._loaded_at >= CATALOG_TTL_SECONDS:
+                self._last_attempt = time.monotonic()
                 try:
                     await self._refresh()
+                    self.reachable = True
                 except Exception as exc:
+                    self.reachable = False
                     if self._catalog is None:
                         raise ToolServiceError(f"Could not load MCP tools ({type(exc).__name__})") from exc
                     logger.warning("MCP catalog refresh failed; keeping the cached catalog")
@@ -180,6 +198,11 @@ class McpToolGateway:
             data = data["context"]
         text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
         return text[:MAX_CONTEXT_CHARS]
+
+    async def recheck(self) -> None:
+        """Reconnect after a failure by refreshing the catalog now (the cached one is kept if it fails)."""
+        self._loaded_at = 0.0
+        await self.warm_up()
 
     async def warm_up(self) -> None:
         try:

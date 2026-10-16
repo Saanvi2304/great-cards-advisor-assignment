@@ -4,6 +4,9 @@ Each conversation gets its own log file containing every turn: the user's messag
 (after redaction), the chatbot's reply, the HTTP endpoint used, Gemini calls and every
 MCP tool call with its arguments, status, raw (pre-cleaning) arguments
 and error text or a truncated result. Only redacted text is ever written.
+
+The same files are read back to list a browser's past chats in the sidebar and to show
+or resume a chat's full history; only files tagged with the caller's session hash are read.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +49,11 @@ def _now() -> datetime:
     return datetime.now().astimezone()
 
 
+def session_tag(session_id: str) -> str:
+    """Short one-way hash of the session cookie: the cookie value itself is a credential."""
+    return hashlib.sha256(session_id.encode()).hexdigest()[:12]
+
+
 def _indent(text: str) -> str:
     return "\n".join("    " + line for line in text.splitlines()) or "    (empty)"
 
@@ -61,13 +70,13 @@ class TranscriptLogger:
         """Create the session's log file on its first turn."""
         if conversation.log_path is None:
             started = _now()
-            # The cookie value is a credential, so only a short one-way hash appears on disk.
-            tag = hashlib.sha256(session_id.encode()).hexdigest()[:12]
+            tag = session_tag(session_id)
             path = self._dir / f"session_{started:%Y%m%d-%H%M%S}_{tag}_{id(conversation) % 10_000:04d}.log"
             header = (
                 "==== Great.cards Credit Card Advisor - chat session ====\n"
                 f"Session : {tag}\n"
-                f"Started : {started:%Y-%m-%d %H:%M:%S %z}\n"
+                + (f"Chat    : {conversation.chat_id}\n" if conversation.chat_id else "")
+                + f"Started : {started:%Y-%m-%d %H:%M:%S %z}\n"
                 f"Model   : {self._llm_model or 'not configured'}\n"
                 "Note    : user messages are stored after sensitive-data redaction.\n"
             )
@@ -134,3 +143,154 @@ class TranscriptLogger:
             return
         await self._append(conversation.log_path,
                            f"\n---- {_now():%Y-%m-%d %H:%M:%S} | {endpoint} ----\n{message}\n")
+
+    # ---- Reading transcripts back (sidebar history and resuming chats) ----
+
+    def _files(self, session_id: str) -> list[Path]:
+        """This browser's transcript files, newest first."""
+        files = self._dir.glob(f"session_*_{session_tag(session_id)}_*.log")
+        return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)
+
+    async def list_chats(self, session_id: str, limit: int) -> list[LoggedChat]:
+        def collect() -> list[LoggedChat]:
+            chats = []
+            for path in self._files(session_id)[:limit]:
+                chat = parse_transcript(path)
+                if chat and chat.turns:
+                    chats.append(chat)
+            return chats
+
+        try:
+            return await asyncio.to_thread(collect)
+        except OSError:
+            logger.warning("Could not list session transcripts")
+            return []
+
+    async def load_chat(self, session_id: str, chat_id: str) -> LoggedChat | None:
+        """The transcript of one of this browser's chats, matched by chat id (or file name for older logs)."""
+        def find() -> LoggedChat | None:
+            for path in self._files(session_id):
+                if _chat_id(path, _read_header(path)) == chat_id:
+                    return parse_transcript(path)
+            return None
+
+        try:
+            return await asyncio.to_thread(find)
+        except OSError:
+            logger.warning("Could not read a session transcript")
+            return None
+
+
+@dataclass
+class LoggedTurn:
+    time: str
+    user: str = ""
+    reply: str = ""
+    kind: str = ""
+    tools: list[str] = field(default_factory=list)
+    notices: list[str] = field(default_factory=list)
+    blocked_reason: str = ""
+
+
+@dataclass
+class LoggedChat:
+    id: str
+    path: Path
+    started: str
+    updated: str
+    turns: list[LoggedTurn]
+
+    @property
+    def title(self) -> str:
+        first = next((t.user for t in self.turns if t.user.strip()), "New chat")
+        first = " ".join(first.split())
+        return first if len(first) <= 70 else first[:67].rstrip() + "..."
+
+
+_TURN_RE = re.compile(r"^---- Turn \d+ \| (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \| .* ----$")
+_EVENT_RE = re.compile(r"^---- \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| .* ----$")
+_ASSISTANT_RE = re.compile(r"^ASSISTANT \[(\w+)\]:$")
+_MCP_CALL_RE = re.compile(r"^    - (\S+) .* -> (.+)$")
+_GUARDRAIL_RE = re.compile(r"^Guardrail: blocked locally \((.+)\)$")
+_CALLED_STATUSES = ("ok", "error returned by tool")   # the calls the pipeline reports in tools_used
+_HEADER_BYTES = 1024
+
+
+def _read_header(path: Path) -> dict[str, str]:
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        head = handle.read(_HEADER_BYTES)
+    header = {}
+    for line in head.splitlines():
+        if not line.strip():
+            break
+        key, sep, value = line.partition(":")
+        if sep:
+            header[key.strip().lower()] = value.strip()
+    return header
+
+
+def _chat_id(path: Path, header: dict[str, str]) -> str:
+    return header.get("chat") or path.stem   # logs written before multi-chat support have no Chat line
+
+
+def _iso(value: str, fmt: str) -> str:
+    try:
+        return datetime.strptime(value, fmt).isoformat()
+    except ValueError:
+        return ""
+
+
+def parse_transcript(path: Path) -> LoggedChat | None:
+    """Rebuild the user/assistant turns of a transcript written by TranscriptLogger."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        updated = datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat()
+    except OSError:
+        return None
+    header = _read_header(path)
+    turns: list[LoggedTurn] = []
+    turn: LoggedTurn | None = None
+    block = ""             # "user" or "assistant" while reading an indented message body
+    body: list[str] = []
+
+    def flush() -> None:
+        message = "\n".join(body).rstrip()
+        message = "" if message == "(empty)" else message
+        if turn is not None:
+            if block == "user":
+                turn.user = message
+            else:
+                turn.reply = message
+        body.clear()
+
+    for line in text.splitlines():
+        if block:
+            if line.startswith("    "):
+                body.append(line[4:])
+                continue
+            flush()
+            block = ""
+        if match := _TURN_RE.match(line):
+            turn = LoggedTurn(time=_iso(match.group(1), "%Y-%m-%d %H:%M:%S"))
+            turns.append(turn)
+        elif _EVENT_RE.match(line):
+            turn = None
+        elif turn is None:
+            continue
+        elif line == "USER:":
+            block = "user"
+        elif match := _ASSISTANT_RE.match(line):
+            turn.kind, block = match.group(1), "assistant"
+        elif line.startswith("Notice: "):
+            turn.notices.append(line[len("Notice: "):])
+        elif match := _GUARDRAIL_RE.match(line):
+            turn.blocked_reason = match.group(1)
+        elif (match := _MCP_CALL_RE.match(line)) and match.group(2) in _CALLED_STATUSES:
+            turn.tools.append(match.group(1))
+    if block:
+        flush()
+    return LoggedChat(
+        id=_chat_id(path, header), path=path,
+        started=_iso(header.get("started", ""), "%Y-%m-%d %H:%M:%S %z") or (turns[0].time if turns else ""),
+        updated=updated, turns=turns,
+    )

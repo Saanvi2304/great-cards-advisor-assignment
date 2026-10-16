@@ -54,9 +54,12 @@ A web chatbot that helps Indian users choose credit cards based on their spendin
 ### Useful endpoints
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/` | GET | Chat UI |
-| `/api/chat` | POST | `{"message": "..."}` → `{"reply", "kind", "tools_used", "notices"}` |
-| `/api/reset` | POST | Clears the current conversation (closes its session log) |
+| `/` | GET | Chat dashboard |
+| `/api/chat` | POST | `{"message": "...", "chat_id": "..."}` → `{"reply", "kind", "tools_used", "notices"}`. `chat_id` is optional (8–80 chars of `A-Z a-z 0-9 _ -`); each id is a separate conversation. Without it, the cookie's single conversation is used. |
+| `/api/conversations` | GET | This browser's past chats from its session logs, newest first (up to 50): `[{"id", "title", "started", "updated", "turns"}]` |
+| `/api/conversations/{chat_id}` | GET | Full message history of one of this browser's chats, rebuilt from its session log (404 if it isn't theirs) |
+| `/api/status` | GET | Gemini and MCP status for the sidebar indicators: `{"llm": {...}, "mcp": {...}}`, each with `state` (`ready`, `degraded`, `connecting`, `offline`, `off`), `label` and `detail` |
+| `/api/reset` | POST | Clears the cookie's single conversation and closes its session log (kept for API clients; the dashboard uses `chat_id` instead) |
 | `/health` | GET | `{"status": "ok", "configured": true/false}` (never shows secrets) |
 
 > Conversations are stored in memory, so run a **single worker process**.
@@ -148,12 +151,21 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
 10. **Session transcript** (`chat/transcript.py`): the turn is appended to the session's log file. This covers the redacted user message, the endpoint, Gemini and MCP calls, and the final answer. See [Logging](#logging).
 
 ### Conversation state
-- Each browser gets an opaque, HttpOnly `gc_session` cookie.
-- History is stored per session, in redacted form only, and capped at 12 messages.
+- Each browser gets an opaque, HttpOnly `gc_session` cookie, valid for 30 days so the sidebar can keep listing that browser's past chats.
+- **Several chats per browser:** the dashboard gives every chat its own random `chat_id`, and the server keeps a separate conversation for each `cookie + chat_id` pair, so chats never share history.
+- **Resuming a chat:** if a chat is no longer in memory (it expired or the server restarted), its next message rebuilds the history from the chat's session log, using the same rules as a live turn (blocked messages stay withheld, an open clarifying question stays open). New turns keep appending to the same log file.
+- History is stored per conversation, in redacted form only, and capped at 12 messages.
 - Figures from earlier turns' tool results are **not** carried over, so each answer can quote only that turn's tool results and the user's current request.
 - While the bot is waiting for an answer to a clarifying question, the session keeps the text of the open request, so the user's earlier figures still count after they reply.
 - A per-session lock prevents overlapping turns.
-- Sessions expire after 1 hour, and the store is capped at 1000 sessions.
+- In-memory conversations expire after 1 hour, and the store is capped at 1000 conversations.
+
+### Chat dashboard
+- **Sidebar:** New chat button (also Ctrl+Shift+O), live Gemini and MCP status, the browser's recent chats grouped by day, and clickable example questions (recommendation, comparison, eligibility, savings).
+- **Separate chats:** each chat has its own id and history. Switching chats while a reply is pending is safe: the reply is stored on its own chat, which is marked with a dot and announced in a toast.
+- **History:** opening a past chat loads its full history from its session log; sending a message continues it.
+- **Feedback:** ripple on every button, typing indicator with progress text, skeleton loaders, toasts for successes and errors, a retry button on failed requests and a copy button on answers.
+- **Layouts:** desktop and tablet landscape show the sidebar as a column; below 900px it becomes a drawer, and below 600px the layout tightens for phones.
 
 ### Logging
 All logs go into the project's `logs/` folder. The app creates the folder on startup if it doesn't exist, and `logs/` is listed in `.gitignore`, so logs are never committed.
@@ -180,7 +192,9 @@ Every chat session gets its own log file, created on the session's first message
   - a `detail` line with the validation/grounding error text, or the tool result truncated to 2,000 characters
 - the **chatbot's answer**, its kind (`local`, `clarification`, `answer`, `blocked` or `error`) and any privacy notices
 
-Clicking **New chat** (`POST /api/reset`) writes a closing entry to the current file, and the next message starts a new file.
+Each chat in the dashboard has its own file. Its header includes a `Chat    : <chat id>` line, which is how the sidebar finds the file again; older logs without that line use the file name as their id. `POST /api/reset` (API clients only) writes a closing entry to the current file, and the next message starts a new file.
+
+**Read back by the dashboard:** `GET /api/conversations` and `GET /api/conversations/{chat_id}` parse these files to list past chats and show their full history. Only files whose session tag matches the caller's cookie are ever read, so one browser can never see another's chats.
 
 **File names**
 - Format: `session_<start time>_<session tag>_<suffix>.log`.
@@ -278,23 +292,23 @@ great-cards/
 ### `app/` (top level)
 | File | Responsibility |
 |---|---|
-| `main.py` | Creates the FastAPI app. On startup it creates `logs/` if it's missing, sets up logging and the session transcript logger, and builds the Gemini client, the MCP gateway (and starts loading the tool catalog in the background), the session store and the pipeline; on shutdown it closes them. Also defines the routes (`/`, `/api/chat`, `/api/reset`, `/health`), the session cookie, security headers (CSP and others) and the validation-error handler. |
-| `config.py` | Loads `.env` without overriding real environment variables, treats unfilled placeholders as missing, and lists missing variables by name only. Also holds the fixed limits (message length, tool steps, history size, session TTL, MCP timeout) and the log paths (`LOG_DIR`, `SESSION_LOG_DIR`, `APP_LOG_FILE`). |
-| `schemas.py` | Pydantic models for the chat request and response. |
+| `main.py` | Creates the FastAPI app. On startup it creates `logs/` if it's missing, sets up logging and the session transcript logger, and builds the Gemini client, the MCP gateway (and starts loading the tool catalog in the background), the session store and the pipeline; on shutdown it closes them. Also defines the routes (`/`, `/api/chat`, `/api/conversations`, `/api/conversations/{chat_id}`, `/api/status`, `/api/reset`, `/health`), the session cookie, security headers (CSP and others) and the validation-error handler. `/api/status` reports Gemini and MCP health from the outcome of real calls (no extra Gemini requests) and retries an unreachable MCP server at most every 30 seconds. |
+| `config.py` | Loads `.env` without overriding real environment variables, treats unfilled placeholders as missing, and lists missing variables by name only. Also holds the fixed limits (message length, tool steps, history size, session TTL, cookie lifetime, number of chats listed, MCP timeout) and the log paths (`LOG_DIR`, `SESSION_LOG_DIR`, `APP_LOG_FILE`). |
+| `schemas.py` | Pydantic models for the chat request (with the optional `chat_id`) and response, the chat list and history, and the service status. |
 | `logging_config.py` | Logging setup: console output plus a rotating `logs/app.log`, and `RedactingFilter`, which removes personal data and secrets from every log record. |
 
 ### `app/chat/`: conversation flow
 | File | Responsibility |
 |---|---|
-| `pipeline.py` | `ChatPipeline`, which runs the full flow for one turn (stages 1–9 above): redaction, local intents, guardrails, the Gemini tool loop, argument validation, MCP execution, figure grounding and output guardrails. |
+| `pipeline.py` | `ChatPipeline`, which runs the full flow for one turn (stages 1–9 above): redaction, local intents, guardrails, the Gemini tool loop, argument validation, MCP execution, figure grounding and output guardrails. It keys conversations by cookie and `chat_id`, and resumes a chat from its transcript when it is no longer in memory. |
 | `intents.py` | Regex-based small talk (greetings, help, thanks, bye) answered locally. |
-| `session.py` | `Conversation` (redacted history, the open request carried across clarifying questions, lock, turn count, transcript file path) and `SessionStore` (expiry, size cap, eviction of least-recently-used sessions). |
-| `transcript.py` | `TurnTrace` (collects the endpoint, Gemini calls, MCP calls and guardrail outcome for one turn) and `TranscriptLogger` (creates a log file per chat session and appends each turn and the reset event, writing off the event loop). |
+| `session.py` | `Conversation` (redacted history, the open request carried across clarifying questions, lock, turn count, transcript file path, chat id) and `SessionStore` (expiry, size cap, eviction of least-recently-used sessions). |
+| `transcript.py` | `TurnTrace` (collects the endpoint, Gemini calls, MCP calls and guardrail outcome for one turn) and `TranscriptLogger` (creates a log file per chat and appends each turn and the reset event, writing off the event loop). It also reads the files back: `list_chats` / `load_chat` find a browser's own files by session tag, and `parse_transcript` rebuilds each turn (user text, reply, kind, tools used, notices, guardrail outcome). |
 
 ### `app/llm/`: Gemini integration
 | File | Responsibility |
 |---|---|
-| `gemini.py` | Async `GeminiClient` (timeout from `LLM_TIMEOUT_SECONDS`, friendly error mapping). Converts MCP JSON Schemas into Gemini function declarations and provides helpers for messages and function calls. |
+| `gemini.py` | Async `GeminiClient` (timeout from `LLM_TIMEOUT_SECONDS`, friendly error mapping, remembers whether the last call failed for the status indicator). Converts MCP JSON Schemas into Gemini function declarations and provides helpers for messages and function calls. |
 | `prompts.py` | System prompt (scope, tool-selection guide, clarification rules, safety rules, style), the `ask_clarification` declaration, the prompt that asks Gemini to rewrite answers with unsupported figures, and the prompt that requires a tool call when a draft states card facts without one. |
 
 ### `app/safety/`: privacy and guardrails
@@ -307,15 +321,15 @@ great-cards/
 ### `app/tools/`: Great.cards MCP integration
 | File | Responsibility |
 |---|---|
-| `client.py` | `McpToolGateway`: opens MCP sessions (streamable HTTP or SSE), loads and caches the live tool catalog and advisor context, and runs tool calls with timeouts through a per-turn `ToolConnection`. |
+| `client.py` | `McpToolGateway`: opens MCP sessions (streamable HTTP or SSE), loads and caches the live tool catalog and advisor context, and runs tool calls with timeouts through a per-turn `ToolConnection`. It records whether the server was reachable on the latest attempt, for the status indicator. |
 | `registry.py` | Lists which tools Gemini may use and which parameters are hidden, builds the schema shown to Gemini, cleans arguments, validates them with `jsonschema` against the live schema, and checks that values came from the user. |
 
 ### `app/templates/` and `app/static/`: web UI
 | File | Responsibility |
 |---|---|
-| `templates/index.html` | Chat page: header with "New chat", welcome message, suggestion chips, message box, privacy footnote and "not configured" banner. |
-| `static/css/styles.css` | Clean, responsive styling (chat bubbles, tables, tags, notices, typing indicator). |
-| `static/js/chat.js` | Sends messages, shows a typing indicator, renders safe minimal markdown (everything escaped first: bold, lists, tables, links), shows "Source" tags and privacy notices, and handles reset. |
+| `templates/index.html` | Dashboard page: a sidebar (New chat, Gemini/MCP status, recent chats, example questions) and the chat panel (header, messages, message box, privacy footnote, "not configured" banner), plus the empty-state template with example cards. |
+| `static/css/styles.css` | Responsive dashboard styling with light and dark themes: a sidebar column on desktop and a slide-in drawer below 900px, chat bubbles, tables, tags, notices, skeleton loaders, toasts, ripple and other transitions. Animations are switched off for users who prefer reduced motion. |
+| `static/js/chat.js` | No dependencies. Keeps each chat's messages separately (a reply always lands in the chat that sent it, even after switching), loads past chats and their history, polls `/api/status` every 20 seconds, renders safe minimal markdown (everything escaped first: bold, nested lists, tables, links), shows "Source" tags, notices, copy and retry buttons, and gives immediate feedback with ripples, typing indicator, toasts and a scroll-to-latest button. |
 
 ### Exposed MCP tools
 | Tool | Used for |

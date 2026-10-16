@@ -389,3 +389,75 @@ Inspect `D:\great-cards\logs\sessions\session_20261016-092659_e561d101032c_4192.
 - **Period inherited from earlier messages:** if the user used one period consistently before, it is applied to a new unstated amount. That is the "explicitly established" rule you asked for, but it is an inference.
 - **The answer text can still label a period wrongly** (e.g. call a stated amount "monthly"). The ₹ check only checks figures. The prompt rule covers this, but no code enforces it.
 - **The tests need `data/mcp_tools.json`,** which is currently untracked in git.
+
+---
+
+## 9. User
+
+Upgrade the current plain chatbot into a modern, polished, highly interactive and responsive AI chat dashboard while keeping the existing Python/FastAPI backend and functionality intact. Add a left sidebar with a New Chat button, previous conversations loaded from existing session logs, live LLM and MCP server status indicators, and clickable example questions for recommendations, card comparisons, eligibility and savings. Users should be able to create separate chats, switch between past conversations and view their complete message history without mixing sessions. Keep the main chatbot on the right with a clean message layout, responsive input, smooth scrolling, loading indicators and clear empty states. Make every interaction feel fast and satisfying with circular ripple animations on button clicks, smooth transitions, hover and focus effects, and immediate feedback for loading, errors and successful actions. Ensure the layout works beautifully on desktop, tablet and mobile. First inspect the existing frontend, backend and log format, reuse existing functionality wherever possible, avoid unnecessary dependencies and backend rewrites, and do not break Gemini, MCP, grounding, validation or logging. Implement the changes directly and summarize what was changed. Also update inline_text.md
+
+## 9. Assistant: work performed
+
+- **Inspected:** `index.html`, `chat.js`, `styles.css`, `main.py`, `schemas.py`, `session.py`, `transcript.py`, `pipeline.py`, `gemini.py`, `client.py`, `config.py`, the README, and the transcript format in `logs/sessions/` and `logs_failure_example/`.
+- **Constraints found:**
+  - The CSP allows only `'self'` scripts and styles, so the UI uses no CDN, web fonts or inline styles. It is plain HTML, CSS and JS with no new dependencies.
+  - Conversations were keyed by the cookie alone, so one browser could have only one chat. Transcripts are tagged with a hash of the cookie.
+- **Backend (small additions, pipeline unchanged):**
+  - **`schemas.py`:** `ChatRequest` takes an optional, validated `chat_id`. New response models for the chat list, chat history and service status.
+  - **`chat/pipeline.py`:**
+    - `handle()` keys conversations by `cookie:chat_id`, so chats never share history. Without a `chat_id`, it works exactly as before.
+    - `_resume()` rebuilds a chat that is no longer in memory (expired or server restarted) from its transcript. It replays the turns with the same history rules (withheld blocked messages, an open clarifying question) and keeps appending to the same log file.
+  - **`chat/transcript.py`:**
+    - New log files have a `Chat    : <id>` header line.
+    - `list_chats` / `load_chat` read only the caller's own files (matched by session tag). Older logs without the line use the file name as their id.
+    - `parse_transcript` rebuilds each turn: user text, reply, kind, tools used, notices and guardrail outcome. The log format is otherwise unchanged.
+  - **`chat/session.py`:** `Conversation.chat_id`.
+  - **`llm/gemini.py`:** remembers whether the last call failed (`last_error`). The request code itself is unchanged.
+  - **`tools/client.py`:** records whether MCP was reachable on the latest attempt (`reachable`, `tool_count`, `loading`), and adds `recheck()` to retry after a failure.
+  - **`main.py`:**
+    - New routes: `GET /api/conversations`, `GET /api/conversations/{chat_id}` and `GET /api/status`.
+    - `/api/chat` passes `chat_id` through.
+    - The cookie now lasts 30 days, so past chats stay listed. In-memory conversations still expire after 1 hour.
+    - Status uses only the outcome of real calls (no extra Gemini requests), and retries an unreachable MCP server at most every 30 s.
+  - **`config.py`:** `COOKIE_MAX_AGE_SECONDS` and `MAX_LISTED_CHATS`.
+- **Frontend (rewritten):**
+  - **`index.html`:** a sidebar with New chat, Gemini/MCP status cards, recent chats and example questions (recommend, compare, eligibility, savings, browse), and the chat panel. The empty state has four example cards.
+  - **`chat.js`:**
+    - Every chat keeps its own messages. A reply is always stored on the chat that sent it; if the user has switched away, that chat gets an unread dot and a "View" toast.
+    - Past chats load from the logs, with skeleton loaders and error states that have a retry button.
+    - Status is polled every 20 s and when the tab regains focus.
+    - The markdown renderer now supports nested lists and keeps numbering across blank lines. It still escapes everything first.
+    - Other feedback: ripple on every button (pointer or keyboard), typing indicator with progress text, copy and retry buttons, a 120 s request timeout, toasts, a scroll-to-latest button, and Ctrl+Shift+O for a new chat.
+  - **`styles.css`:**
+    - Light and dark themes.
+    - The sidebar is a column on desktop and a drawer below 900px (backdrop, Esc, focus handling, `inert` main panel); the layout tightens below 600px and respects safe areas.
+    - Includes hover, focus and press states, and reduced-motion support.
+- **README:** documents the endpoints, conversation state, the dashboard, how logs are read back, and the file responsibilities.
+- **Checks run:**
+  - The existing 16 unit tests pass.
+  - **API test** (temporary log folder, Gemini/MCP off, local greetings only):
+    - Two chats stay separate.
+    - The list and history are correct.
+    - After a simulated restart, a chat resumes with 3 turns and 6 history messages in the same file.
+    - Bad ids get 422/404, and the old flow without a `chat_id` still works.
+    - Another cookie sees none of the chats.
+  - **Parser:** all 8 existing logs in `logs/sessions/` parse. On the 22-turn example log, the tools, the privacy notice and the off-topic blocks are all recovered.
+  - **Live server with the real `.env`:** `/api/status` reported Gemini ready and MCP online with 8 tools. No chat message was sent.
+  - **Headless Edge:** screenshots at desktop, tablet (light and dark) and a true 390px phone viewport.
+    - No horizontal overflow.
+    - The 22-turn log renders as 44 messages with nested lists and source tags.
+    - The drawer opens and closes.
+
+## 9. Assistant: reply
+
+The chatbot is now a two-panel dashboard. The left sidebar has New chat, live Gemini/MCP status, the browser's past chats and example questions. The chat panel on the right has an empty state, loading and error states, and feedback on every action. Gemini, MCP, grounding, validation and logging are unchanged.
+
+**How separate chats work:** each chat has its own `chat_id`, and the server keeps one conversation per cookie + chat id. The sidebar lists past chats by reading the existing session logs, and opening one shows its full history. If the chat expired or the server restarted, the next message rebuilds its history from the log and appends to the same file.
+
+**Checks:** 16/16 unit tests pass. An API test covered separate chats, history, resume, validation and isolation between browsers. The live status endpoint reported Gemini ready and MCP online. Headless-browser screenshots were checked at desktop, tablet and phone widths.
+
+**Limitations**
+- **Only this browser's chats are listed.** Logs are matched to the cookie's hash, which keeps them private on a shared server. Logs created under an older cookie (the cookie used to expire after 1 hour) won't appear; new chats stay listed for 30 days.
+- **No message was sent to Gemini during testing.** A real recommendation turn through the new UI is still untested.
+- **A resumed chat doesn't keep the earlier tool results.** This is the same as before: only redacted history is replayed.
+- **Retrying a failed request** removes the failed exchange from the screen, but the server may already have logged it. The logged turn reappears when the chat is reloaded.

@@ -2,57 +2,176 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
   <title>Great.cards Credit Card Advisor</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v=4">
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">G</span>
-        <div>
-          <h1>Credit Card Advisor</h1>
-          <p>Powered by Great.cards data</p>
+  <div class="shell" id="shell">
+    <!-- ===== Sidebar ===== -->
+    <aside class="sidebar" id="sidebar" aria-label="Chats, status and examples">
+      <div class="sidebar-head">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">G</span>
+          <div class="brand-text">
+            <span class="brand-name">Card Advisor</span>
+            <span class="brand-sub">Powered by Great.cards</span>
+          </div>
         </div>
+        <button type="button" class="icon-button sidebar-close" id="sidebar-close" aria-label="Close sidebar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
       </div>
-      <button type="button" class="ghost-button" id="reset-button" title="Start a new conversation">New chat</button>
-    </header>
 
-    {% if not configured %}
-    <div class="banner banner-warning" role="alert">
-      The advisor isn't fully configured. Add the required values to <code>.env</code> and restart the server.
-    </div>
-    {% endif %}
+      <button type="button" class="btn btn-primary new-chat" id="new-chat" title="New chat (Ctrl+Shift+O)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span>New chat</span>
+      </button>
 
-    <main class="chat" id="chat" aria-live="polite">
-      <div class="message bot" id="welcome">
-        <div class="bubble">
-          <p><strong>Hi! I'm your credit card advisor.</strong></p>
-          <p>Tell me how you spend each month and I'll find cards that fit, or ask about a specific card, a comparison, or your eligibility.</p>
+      <section class="status-panel" aria-label="Service status">
+        <div class="status-item" id="status-llm" data-state="connecting" tabindex="0">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div class="status-text">
+            <span class="status-name">Gemini LLM</span>
+            <span class="status-label">Checking…</span>
+          </div>
         </div>
+        <div class="status-item" id="status-mcp" data-state="connecting" tabindex="0">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div class="status-text">
+            <span class="status-name">MCP server</span>
+            <span class="status-label">Checking…</span>
+          </div>
+        </div>
+      </section>
+
+      <nav class="history" aria-label="Previous chats">
+        <div class="section-head">
+          <span class="section-title">Recent chats</span>
+          <button type="button" class="icon-button small" id="history-refresh" aria-label="Refresh chat list" title="Refresh">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+          </button>
+        </div>
+        <div class="history-list" id="history-list" aria-busy="true"></div>
+      </nav>
+
+      <section class="examples" aria-labelledby="examples-title">
+        <div class="section-head">
+          <span class="section-title" id="examples-title">Try asking</span>
+        </div>
+        <div class="example-list">
+          <button type="button" class="example" data-prompt="I spend ₹10,000 a month on Amazon and ₹3,000 a month on Swiggy. Which credit card suits me best?">
+            <span class="example-tag tag-rec">Recommend</span>
+            <span class="example-text">Best card for Amazon and Swiggy spends</span>
+          </button>
+          <button type="button" class="example" data-prompt="Compare HDFC Regalia Gold and Axis Magnus">
+            <span class="example-tag tag-compare">Compare</span>
+            <span class="example-text">HDFC Regalia Gold vs Axis Magnus</span>
+          </button>
+          <button type="button" class="example" data-prompt="Which cards can I get? I'm salaried earning 12 LPA, pincode 560001">
+            <span class="example-tag tag-elig">Eligibility</span>
+            <span class="example-text">Salaried, 12 LPA, pincode 560001</span>
+          </button>
+          <button type="button" class="example" data-prompt="I spend ₹8,000 a month on groceries and ₹4,000 a month on dining. Which card gives me the highest net annual savings after fees?">
+            <span class="example-tag tag-save">Savings</span>
+            <span class="example-text">Highest net annual savings on groceries and dining</span>
+          </button>
+          <button type="button" class="example" data-prompt="Show lifetime free cards for online shopping">
+            <span class="example-tag tag-rec">Browse</span>
+            <span class="example-text">Lifetime free cards for online shopping</span>
+          </button>
+        </div>
+      </section>
+    </aside>
+    <div class="backdrop" id="backdrop" hidden></div>
+
+    <!-- ===== Chat ===== -->
+    <main class="main" id="main">
+      <header class="main-head">
+        <button type="button" class="icon-button menu-button" id="menu-button" aria-label="Open sidebar"
+                aria-controls="sidebar" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="head-title">
+          <h1 id="chat-title">New chat</h1>
+          <span class="head-sub" id="chat-sub">Credit card advisor</span>
+        </div>
+        <div class="head-status" aria-hidden="true">
+          <span class="status-dot" id="mini-llm" data-state="connecting" title="Gemini LLM"></span>
+          <span class="status-dot" id="mini-mcp" data-state="connecting" title="MCP server"></span>
+        </div>
+        <button type="button" class="icon-button theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
+          <svg class="sun-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <svg class="moon-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <button type="button" class="icon-button head-new" id="head-new" aria-label="New chat" title="New chat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </header>
+
+      {% if not configured %}
+      <div class="banner banner-warning" role="alert">
+        The advisor isn't fully configured. Add the required values to <code>.env</code> and restart the server.
       </div>
-      <div class="suggestions" id="suggestions">
-        <button type="button" class="chip">Best card for ₹6,000 a month on fuel</button>
-        <button type="button" class="chip">Compare HDFC Regalia Gold and Axis Magnus</button>
-        <button type="button" class="chip">Show lifetime free cards for online shopping</button>
-        <button type="button" class="chip">Which cards can I get? I'm salaried earning 12 LPA, pincode 560001</button>
+      {% endif %}
+
+      <div class="messages" id="messages">
+        <div class="thread" id="thread" aria-live="polite"></div>
+      </div>
+
+      <div class="composer-area">
+        <button type="button" class="scroll-down" id="scroll-down" aria-label="Scroll to latest message" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+        </button>
+        <form class="composer" id="composer" autocomplete="off">
+          <label for="message" class="visually-hidden">Your message</label>
+          <textarea id="message" name="message" rows="1" maxlength="{{ max_chars }}" data-max="{{ max_chars }}"
+                    placeholder="Ask about credit cards, e.g. I spend ₹10k a month on Amazon"></textarea>
+          <span class="char-count" id="char-count" aria-live="polite"></span>
+          <button type="submit" id="send-button" class="send-button" aria-label="Send message" disabled>
+            <svg class="send-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6v6.6L15 12 3.4 13.8z"/></svg>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+        </form>
+        <p class="footnote">
+          Never share card numbers, CVV, OTP, PINs, Aadhaar or PAN. Answers use Great.cards data and are not tax advice;
+          approval is always at the bank's discretion.
+        </p>
       </div>
     </main>
-
-    <form class="composer" id="composer" autocomplete="off">
-      <label for="message" class="visually-hidden">Your message</label>
-      <textarea id="message" name="message" rows="1" maxlength="{{ max_chars }}"
-                placeholder="Ask about credit cards, e.g. I spend ₹10k on Amazon and ₹3k on Swiggy monthly"></textarea>
-      <button type="submit" id="send-button" class="send-button" aria-label="Send message">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10.2 15 12 3.4 13.8z"/></svg>
-      </button>
-    </form>
-    <p class="footnote">
-      Never share card numbers, CVV, OTP, PINs, Aadhaar or PAN. Answers use Great.cards data and are not tax advice;
-      card approval is always at the bank's discretion.
-    </p>
   </div>
-  <script src="{{ url_for('static', path='js/chat.js') }}" defer></script>
+
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+  <template id="empty-template">
+    <div class="empty">
+      <div class="empty-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M6 15h4"/></svg>
+      </div>
+      <h2>Find the right credit card</h2>
+      <p>Tell me how you spend each month and I'll rank cards that fit, or ask about a specific card, a comparison or your eligibility.</p>
+      <div class="empty-grid">
+        <button type="button" class="example-card" data-prompt="I spend ₹10,000 a month on Amazon and ₹3,000 a month on Swiggy. Which credit card suits me best?">
+          <span class="example-tag tag-rec">Recommendations</span>
+          <span>I spend ₹10,000 a month on Amazon and ₹3,000 on Swiggy. Which card suits me best?</span>
+        </button>
+        <button type="button" class="example-card" data-prompt="Compare HDFC Regalia Gold and Axis Magnus">
+          <span class="example-tag tag-compare">Card comparison</span>
+          <span>Compare HDFC Regalia Gold and Axis Magnus</span>
+        </button>
+        <button type="button" class="example-card" data-prompt="Which cards can I get? I'm salaried earning 12 LPA, pincode 560001">
+          <span class="example-tag tag-elig">Eligibility</span>
+          <span>Which cards can I get? I'm salaried earning 12 LPA, pincode 560001</span>
+        </button>
+        <button type="button" class="example-card" data-prompt="I spend ₹8,000 a month on groceries and ₹4,000 a month on dining. Which card gives me the highest net annual savings after fees?">
+          <span class="example-tag tag-save">Savings</span>
+          <span>₹8,000 a month on groceries and ₹4,000 on dining: which card saves the most after fees?</span>
+        </button>
+      </div>
+    </div>
+  </template>
+
+  <script src="{{ url_for('static', path='js/chat.js') }}?v=4" defer></script>
 </body>
 </html>

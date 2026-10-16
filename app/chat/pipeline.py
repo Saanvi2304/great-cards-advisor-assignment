@@ -92,14 +92,19 @@ class ChatPipeline:
         self._tools = tools
         self._transcripts = transcripts
 
-    async def handle(self, session_id: str, message: str, endpoint: str = "POST /api/chat") -> ChatReply:
+    async def handle(self, session_id: str, message: str, endpoint: str = "POST /api/chat",
+                     chat_id: str | None = None) -> ChatReply:
         started = time.perf_counter()
         redaction = redact(_clean_input(message))
         logger.info("Turn received: %d chars, redacted=%s", len(redaction.text), list(redaction.findings) or "none")
         trace = TurnTrace(endpoint=endpoint, redacted=redaction.findings)
 
-        conversation = self._sessions.get(session_id)
+        # Each chat of a browser is a separate conversation; the transcript tag stays the cookie hash.
+        conversation = self._sessions.get(f"{session_id}:{chat_id}" if chat_id else session_id)
         async with conversation.lock:
+            if chat_id and not conversation.chat_id:
+                conversation.chat_id = chat_id
+                await self._resume(conversation, session_id, chat_id)
             reply, history_text = await self._respond(conversation, redaction.text, redaction.critical, trace)
             if redaction.findings:
                 reply.notices.insert(0, PRIVACY_NOTICE.format(", ".join(redaction.findings)))
@@ -110,6 +115,23 @@ class ChatPipeline:
                 await self._transcripts.log_turn(conversation, session_id, trace, redaction.text, reply, elapsed_ms)
         logger.info("Turn answered: kind=%s tools=%s", reply.kind, reply.tools_used or "none")
         return reply
+
+    async def _resume(self, conversation: Conversation, session_id: str, chat_id: str) -> None:
+        """Rebuild a chat that is no longer in memory (expired or server restarted) from its transcript,
+        so new turns see the same history and keep appending to the same log file."""
+        if self._transcripts is None:
+            return
+        logged = await self._transcripts.load_chat(session_id, chat_id)
+        if logged is None:
+            return
+        for turn in logged.turns:
+            # Same history rule as _respond: blocked messages other than off-topic/tax are withheld.
+            blocked = turn.kind == "blocked" and turn.blocked_reason not in ("", "off_topic", "tax_advice")
+            user_text = WITHHELD_HISTORY_TEXT if blocked else turn.user
+            conversation.track_request(user_text, turn.kind)
+            conversation.add_exchange(user_text, turn.reply)
+        conversation.log_path = logged.path
+        logger.info("Resumed a chat from its transcript (%d turns)", len(logged.turns))
 
     async def reset(self, session_id: str, endpoint: str = "POST /api/reset") -> None:
         """Start a new conversation; the old transcript is closed and the next turn opens a new file."""

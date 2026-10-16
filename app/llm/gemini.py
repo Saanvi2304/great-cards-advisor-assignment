@@ -98,6 +98,7 @@ class GeminiClient:
     def __init__(self, api_key: str, model: str, timeout_seconds: float):
         self._model = model
         self._timeout = timeout_seconds
+        self.last_error = ""   # user-facing message of the most recent failed call ("" after a success)
         self._client = genai.Client(
             api_key=api_key,
             http_options=types.HttpOptions(timeout=int(timeout_seconds * 1000)),
@@ -124,6 +125,20 @@ class GeminiClient:
             config.tool_config = types.ToolConfig(
                 function_calling_config=types.FunctionCallingConfig(mode=mode)
             )
+        try:
+            response = await self._call(contents, config)
+        except LLMError as exc:
+            self.last_error = exc.user_message
+            raise
+        self.last_error = ""
+        return response
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    async def _call(self, contents: list[types.Content],
+                    config: types.GenerateContentConfig) -> types.GenerateContentResponse:
         try:
             return await asyncio.wait_for(
                 self._client.aio.models.generate_content(model=self._model, contents=contents, config=config),

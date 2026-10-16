@@ -26,6 +26,7 @@ class Conversation:
     last_seen: float = field(default_factory=time.monotonic)
     turn_count: int = 0
     log_path: Path | None = None   # this conversation's transcript file, created on the first turn
+    chat_id: str = ""              # client-chosen id when one browser keeps several chats
 
     def __post_init__(self) -> None:
         self.history = deque(maxlen=self.max_messages)
