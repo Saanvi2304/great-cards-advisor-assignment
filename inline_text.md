@@ -697,3 +697,20 @@ Single-tool and no-tool turns are unchanged; I expect no saving there.
   - TLS-handshake time versus initialize time within session setup;
   - the server's keep-alive idle timeout;
   - how often a turn arrives while the catalog is still loading.
+
+---
+
+## 12. User
+
+> I want you to add a section, in failures.md of what were my findings, and what i fixed, and add a reference to the newly created log session in logs_failure_example. compare them in a tabular format, after execution add this prompt and the answer in inline_text.md
+
+## 12. Assistant: reply
+
+Added Section 9 ("Evaluation after fixes: findings, applied fixes, and comparison") to `failures.md`:
+
+- **Reference logs:** Linked the baseline log (`logs_failure_example/sessions/session_20261015-225108_daea386ecf33_6144.log`) and the newly consolidated post-fix evaluation log (`logs_failure_example/sessions/session_20261016-182158_7e7e59e3dc26_2368.log`).
+- **Findings vs. fixes:** Summarized initial findings (invented spend numbers, ungrounded rupee figures, answering card facts without tools, spend-blind comparisons, and generic caps) and the corresponding client-side code and prompt fixes.
+- **Tabular comparison:** Mapped all scenarios in a Markdown table comparing the baseline finding, fix applied, verified outcome in the new log, and resolution status.
+- **Transcript verifications:** Included before/after case studies for spend-period clarification (Q4) and tool-backed card comparisons (Q11).
+
+
