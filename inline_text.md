@@ -341,3 +341,51 @@ lets go ahead and fix p3 now, same prompt as p2 before. Make sure the implementa
 - **Fraud and dedup filters are keyword regexes:** they can still miss reworded requests and could occasionally block an unusual innocent phrasing.
 - **Pincode check is coarse:** it is a range check (11–85), not a lookup, so a non-existent pincode inside that range still passes to the tool.
 - **Not exercised end to end:** no app launch, test suite or Gemini/MCP call was run.
+
+---
+
+## 8. User
+
+Inspect `D:\great-cards\logs\sessions\session_20261016-092659_e561d101032c_4192.log` and trace why the chatbot assumed ₹10,000 spent on Myntra was monthly when I never specified the period. Identify the root cause in the logs and relevant code, then implement the smallest reliable fix. The chatbot should clarify whether spending is monthly or annual unless the previous conversation explicitly established the period. Preserve all P1 grounding fixes and ensure annual savings are never invented. Add offline regression checks for both scenarios. Do not modify `failures.md`, touch `.env`, launch the app, or make live Gemini/MCP calls. Report the cause, changes and checks performed. Also edit inline__text.md and add this prompt and answer
+
+## 8. Assistant: work performed
+
+- Read the session log, the matching `logs/app.log` lines, the `recommend_cards` schema in `data/mcp_tools.json`, and `registry.py`, `grounding.py`, `session.py`, `prompts.py`.
+- **Trace (Turn 1):**
+  - The user wrote "I spend ₹10,000 on Myntra … how much I will save annually", with no spend period.
+  - Gemini called `recommend_cards {"other_online_spends": 10000}`. Per the schema, `other_online_spends` is a **monthly** field, so the tool treated it as ₹1.2L/yr.
+  - The tool returned "net_annual_savings ₹10,821" and "annual_rewards_value ₹12,000" for that assumed spend. The answer then said "For your ₹10,000 **monthly** spend", a period the user never gave.
+- **Root cause:**
+  1. **Code:** `registry._ungrounded_spends` accepted a spend if it equalled a stated number ×1, ×12 or ÷12. It never checked whether a period was stated, nor whether the conversion matched it. So 10000 passed, and a yearly amount sent unchanged to a monthly field would have passed too (12× inflated savings).
+  2. **Prompt:** nothing told Gemini to ask about the period. The "convert units" rule implicitly treated amounts as monthly.
+  3. **Why P1 didn't catch it:** the P1 ₹ check passed correctly, because ₹10,821 really was in the tool result. The error was in the tool *input*, so the fix belongs in argument grounding.
+- **Fix:**
+  - **`app/tools/registry.py`:**
+    - Each amount in the current request is tagged with a period: from words next to it ("a month", "pm", "/yr", "yearly", …), from another amount in the same sentence, from a bare reply ("monthly", "it's yearly") to a clarifying question, or from earlier user messages that used only one period.
+    - Each spend field must then use the right factor: monthly fields take monthly ₹ (yearly ÷12); `*_annual` fields and `life_insurance` take yearly ₹ (monthly ×12).
+    - No period → rejected with "ask whether monthly or annual". Wrong conversion → rejected with the field-unit rule.
+    - The "not stated" (P1) rejection is unchanged, lounge fields keep their P1 logic, and `whatsapp_compare_cards` spend profiles get the same check.
+  - **`app/safety/grounding.py`:** added `number_spans()` (numbers with positions); `numbers_in()` now uses it, with unchanged output.
+  - **`app/llm/prompts.py`:** one rule: ask whether an amount is per month or per year when unstated, and never call it monthly or annual unless the user did.
+  - **`tests/test_spend_period.py`:** new, 16 offline `unittest` checks, plus README notes (pipeline stage 6, folder structure, root table).
+- **Checks run:**
+  - `venv\Scripts\python -m unittest discover -s tests -v`: 16/16 pass. They cover:
+    - **Period not stated:** the logged Myntra turn is rejected; "save annually" isn't mistaken for a spend period; an earlier mixed monthly/annual conversation doesn't settle it; `whatsapp_compare_cards` is checked too; the fake MCP connection is never called.
+    - **Period established:** stated monthly/"pm"; stated yearly converted ÷12 (and 120000 sent as monthly rejected); annual fields; a period shared within a sentence; a "monthly"/"It's yearly" reply after clarification; a period from an earlier message; the fake MCP connection is called.
+    - **P1 preserved:** invented amounts and empty spends are still rejected; tool figures pass the ₹ check, while model arithmetic (₹21,642, ₹1,29,852) is flagged.
+  - The two buggy calls were also run against the committed (pre-fix) `registry.py`: both were accepted (`None`), confirming the tests catch the bug.
+  - No app launch, no Gemini/MCP calls, `.env` and `failures.md` untouched.
+
+## 8. Assistant: reply
+
+**Cause:** the tool's spend fields are monthly, and our argument check accepted any amount that matched a user number ×1/×12/÷12 without checking that the user gave a period. So "₹10,000 on Myntra" became ₹10,000/month, and the tool's annual savings were computed on an assumed ₹1.2L/yr. The P1 ₹ check couldn't see this, because the figures did come from the tool.
+
+**Changes:** period-aware spend grounding in `registry.py` (asks when no period is established, and rejects wrong monthly↔annual conversions), a small `number_spans` helper in `grounding.py`, one prompt rule, `tests/test_spend_period.py`, and README updates.
+
+**Checks:** 16 offline tests pass. The pre-fix code accepts the logged call; the new code rejects it and never reaches MCP.
+
+**Limitations**
+- **Period detection is keyword-based.** Wording like "10k in a quarter" or "per week" isn't converted. It is treated as no period, so the bot asks.
+- **Period inherited from earlier messages:** if the user used one period consistently before, it is applied to a new unstated amount. That is the "explicitly established" rule you asked for, but it is an inference.
+- **The answer text can still label a period wrongly** (e.g. call a stated amount "monthly"). The ₹ check only checks figures. The prompt rule covers this, but no code enforces it.
+- **The tests need `data/mcp_tools.json`,** which is currently untracked in git.

@@ -118,6 +118,7 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
    - **Grounding rules:**
      - `check_eligibility` requires a pincode that the user actually typed and that looks like a real Indian pincode (6 digits, starting 11–85), and an income the user stated.
      - `recommend_cards` checks **each** spend value separately. It must match a number the user wrote in the **current request**, either as written or converted monthly↔annual (×12 or ÷12). Lounge-visit fields can also be converted from per-month or per-year counts to per-quarter.
+     - **Spend period:** each rupee amount also needs a period (monthly or annual), and the conversion must fit it: fields ending in `_annual` (and `life_insurance`) take yearly rupees, every other spend field takes monthly rupees. The period comes from words next to the amount ("a month", "pm", "/yr", "yearly"…), from another amount in the same sentence, from a bare reply such as "monthly" to a clarifying question, or from earlier messages that used only one period. Otherwise the call is rejected and Gemini asks whether the amount is monthly or annual. The same check applies to `whatsapp_compare_cards` spend profiles.
      - The current request is the current message, plus any earlier messages that the bot answered with a clarifying question.
      - Amounts from older messages, or from the bot's own earlier answers, are rejected. Gemini then asks the user to give or confirm them.
    - **On failure:** the error goes back to Gemini, which corrects the arguments or asks the user.
@@ -249,6 +250,8 @@ great-cards/
 │   └── sessions/
 │       └── session_<time>_<tag>_<suffix>.log
 ├── logs_failure_example/     (example failure testing logs; not used at runtime)
+├── tests/
+│   └── test_spend_period.py  (offline regression checks)
 ├── venv/
 ├── .env
 ├── .env.example
@@ -264,6 +267,7 @@ great-cards/
 | `data/mcp_tools.json` | Offline snapshot of the MCP tool descriptions and schemas. **Reference only:** the app always uses the live schemas from the server at runtime. |
 | `logs/` | Runtime logs, created automatically on startup and git-ignored: `app.log` (application log) and `sessions/` (one transcript file per chat session). See [Logging](#logging). |
 | `logs_failure_example/` | Contains logs from failure testing as an example of how logs will look after running the app. It has nothing to do with the running of the app and is just an example. |
+| `tests/test_spend_period.py` | Offline regression checks (no Gemini or MCP calls) for the spend-period rule and the P1 figure grounding. Run with `venv\Scripts\python -m unittest discover -s tests -v`. It reads `data/mcp_tools.json` for the `recommend_cards` schema. |
 | `venv/` | The existing Python virtual environment. |
 | `.env` | Your real configuration and secrets (never committed or logged). |
 | `.env.example` | Template listing the required environment variables. |

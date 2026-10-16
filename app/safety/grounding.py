@@ -49,17 +49,26 @@ def _to_float(number: str) -> float | None:
         return None
 
 
-def numbers_in(text: str) -> set[float]:
-    """Every number in `text`, both as written and scaled by any unit (50k -> 50000)."""
-    found: set[float] = set()
+def number_spans(text: str) -> list[tuple[set[float], int, int]]:
+    """Each number in `text` with its values (as written and unit-scaled) and its (start, end) span."""
+    spans: list[tuple[set[float], int, int]] = []
     for match in _NUMBER_RE.finditer(text):
         value = _to_float(match.group("num") + (match.group("dec") or ""))
         if value is None:
             continue
-        found.add(value)
+        values = {value}
         unit = (match.group("unit") or "").lower()
         if unit in _UNITS:
-            found.add(value * _UNITS[unit])
+            values.add(value * _UNITS[unit])
+        spans.append((values, match.start(), match.end()))
+    return spans
+
+
+def numbers_in(text: str) -> set[float]:
+    """Every number in `text`, both as written and scaled by any unit (50k -> 50000)."""
+    found: set[float] = set()
+    for values, _, _ in number_spans(text):
+        found |= values
     return found
 
 
