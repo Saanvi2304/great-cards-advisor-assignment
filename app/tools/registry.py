@@ -144,6 +144,11 @@ def _mentions_amount(text: str) -> bool:
     return bool(re.search(r"\d", text))
 
 
+def _plausible_pincode(pincode: str) -> bool:
+    """Indian pincodes are 6 digits; the first two (postal circle) run from 11 to 85."""
+    return bool(re.fullmatch(r"\d{6}", pincode)) and 11 <= int(pincode[:2]) <= 85
+
+
 # Simple conversions allowed from a number the user wrote: rupee spends may be monthly or
 # annual; lounge fields are visits per quarter (from per-quarter, per-month or per-year counts).
 _SPEND_FACTORS = (1.0, 12.0, 1 / 12)
@@ -166,6 +171,9 @@ def grounding_problem(name: str, args: dict[str, Any], user_text: str, request_t
         if not re.search(rf"(?<!\d){re.escape(pincode)}(?!\d)", user_text):
             return ("The user has not provided this pincode. Do not assume one; "
                     "call ask_clarification to request their 6-digit pincode.")
+        if not _plausible_pincode(pincode):
+            return (f"{pincode} is not a valid Indian pincode (6 digits, starting 11-85). Do not call "
+                    "check_eligibility with it; call ask_clarification to ask the user to re-check their pincode.")
         if not _mentions_amount(user_text.replace(pincode, "")):
             return ("The user has not stated their income. Do not assume it; "
                     "call ask_clarification to request their monthly or annual income.")

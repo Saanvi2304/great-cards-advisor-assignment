@@ -14,6 +14,16 @@ _CAPABILITIES = (
 
 _INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
+        # "how are you" on its own or after a greeting.
+        re.compile(r"^(?:(?:hi+|hello+|hey+|hiya|helo|hai|namaste|namaskar|hola|yo|"
+                   r"good (?:morning|afternoon|evening|day))(?: there| team| all| everyone| bot| buddy)? )?"
+                   r"(?:how are (?:you|u|things)(?: doing| today)?|how r u|how s it going|how do you do|"
+                   r"what s up|whats up|sup)$"),
+        "I'm doing well, thanks for asking! I'm the Great.cards Credit Card Advisor.\n\n" + _CAPABILITIES + "\n\n"
+        "To get started, tell me where you spend most each month (for example online shopping, fuel, "
+        "groceries or travel) or name a card you're curious about.",
+    ),
+    (
         re.compile(r"^(?:hi+|hello+|hey+|hiya|helo|hai|namaste|namaskar|hola|yo|greetings|"
                    r"good (?:morning|afternoon|evening|day))(?: there| team| all| everyone| bot| buddy)?$"),
         "Hello! I'm the Great.cards Credit Card Advisor.\n\n" + _CAPABILITIES + "\n\n"

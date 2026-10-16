@@ -54,6 +54,15 @@ _RULES: tuple[_Rule, ...] = (
         re.compile(r"(?<!\d)(?P<value>\d{13,19}|\d{4}(?:[ -]\d{4}){2}[ -]\d{1,7}|\d{4}[ -]\d{6}[ -]\d{5})(?!\d)"),
         _luhn_valid,
     ),
+    # 13-19 digits right next to the word "card" are treated as a card number even when Luhn fails.
+    _Rule(
+        "card number",
+        re.compile(r"(?i)\bcard\b(?:\s*(?:no\.?|number|num|#))?\D{0,15}?(?<!\d)(?P<value>\d(?:[ -]?\d){12,18})(?!\d)"),
+    ),
+    _Rule(
+        "card number",
+        re.compile(r"(?i)(?<!\d)(?P<value>\d(?:[ -]?\d){12,18})(?!\d)\D{0,15}?\bcard\b"),
+    ),
     _Rule(
         "CVV",
         re.compile(r"(?i)\b(?:cvv2?|cvc2?|card verification (?:value|code)|security code)\b\D{0,12}?(?P<value>\d{3,4})(?!\d)"),
@@ -93,7 +102,8 @@ _RULES: tuple[_Rule, ...] = (
     ),
     _Rule(
         "Aadhaar number",
-        re.compile(r"(?<!\d)(?P<value>[2-9]\d{3}[ -]?\d{4}[ -]?\d{4})(?!\d)"),
+        # Exactly 12 digits: not part of a longer digit group such as a 16-digit card number.
+        re.compile(r"(?<!\d)(?<!\d[ -])(?P<value>[2-9]\d{3}[ -]?\d{4}[ -]?\d{4})(?![ -]?\d)"),
     ),
     _Rule(
         "PAN",

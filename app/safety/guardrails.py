@@ -31,8 +31,11 @@ _INJECTION = re.compile(
 _FRAUD = re.compile(
     r"\b(stolen|cloned?|skim\w*|carding|cvv dumps?|dumps)\b.{0,20}\bcards?\b"
     r"|\bsomeone else'?s (credit )?card\b"
-    r"|\b(fake|forged?|edit(?:ed)?|morph\w*)\b.{0,25}\b(salary slips?|payslips?|income proofs?|itr|documents?|bank statements?|pan|aadhaar)\b"
+    r"|\b(fake|faking|forged?|forging|edit(?:ed)?|morph\w*|inflate|inflating|falsif\w*)\b.{0,40}\b(salary|income|payslips?|itr|documents?|bank statements?|pan|aadhaar|employer)\b"
+    r"|\b(lie|lying) about (my |our )?(salary|income|employer|employment)\b"
+    r"|\bmisrepresent\w*\b.{0,25}\b(salary|income|employer|employment)\b"
     r"|\b(bypass|cheat|trick|evade)\b.{0,25}\b(kyc|verification|credit check|bank|cibil)\b"
+    r"|\b(extract|steal|siphon)\b.{0,25}\b(money|funds|cash)\b|\b(money|funds|cash)\b.{0,30}\b(extract|steal|siphon)\b"
     r"|\b(generate|create)\b.{0,20}\b(valid|working|fake)\b.{0,10}\bcard numbers?\b",
     re.IGNORECASE,
 )
@@ -51,6 +54,17 @@ _APPROVAL_PROMISE = re.compile(
     r"|\bapprov\w*[^.!?\n]{0,30}\b(guaranteed?|assured|certain|definite|sure)\b"
     r"|\byou(?: will|'ll) (?:definitely |surely |certainly |easily )?(?:be|get) approved\b"
     r"|\byou(?:'re| are) (?:pre-?)?approved\b",
+    re.IGNORECASE,
+)
+# The answer already carries an equivalent disclaimer, so the note would be a duplicate.
+_HAS_APPROVAL_DISCLAIMER = re.compile(
+    r"discretion|decided by the bank|(?:bank|issuer)s? (?:alone )?(?:decides?|makes? the final)"
+    r"|final (?:approval|decision)|(?:cannot|can't|can not) guarantee approval|approval is not guaranteed",
+    re.IGNORECASE,
+)
+_HAS_TAX_DISCLAIMER = re.compile(
+    r"\b(?:can't|cannot|can not|don't|do not|unable to) (?:give|provide|offer) tax advice\b"
+    r"|\btax (?:professional|advisor|adviser|expert|consultant)\b|\bchartered accountant\b",
     re.IGNORECASE,
 )
 _NEGATION = re.compile(r"\b(not|no|never|cannot|can't|can not|isn't|won't|doesn't|don't)\b", re.IGNORECASE)
@@ -123,9 +137,9 @@ def enforce_output(text: str, *, approval_context: bool, tax_context: bool) -> s
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
     notes = []
-    if (approval_context or removed_promise) and "discretion" not in text.lower():
+    if (approval_context or removed_promise) and not _HAS_APPROVAL_DISCLAIMER.search(text):
         notes.append(APPROVAL_NOTE)
-    if tax_context or removed_tax:
+    if (tax_context or removed_tax) and not _HAS_TAX_DISCLAIMER.search(text):
         notes.append(TAX_NOTE)
     if notes:
         text = (text + "\n\n" if text else "") + "\n".join(f"_{note}_" for note in notes)

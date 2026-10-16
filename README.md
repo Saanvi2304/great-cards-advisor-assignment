@@ -90,18 +90,18 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
 1. **Input cleaning and validation:** `schemas.py` rejects empty messages and messages over 1000 characters. `pipeline.py` normalises Unicode and removes control characters.
 
 2. **Sensitive-input redaction** (`safety/redaction.py`)
-   - **Detected and redacted:** card numbers (checked with the Luhn checksum), CVV, OTP, PIN, passwords, bank account numbers, email, UPI ID, phone, Aadhaar, PAN, passport and date of birth.
+   - **Detected and redacted:** card numbers (checked with the Luhn checksum; 13–19 digits right next to the word "card" are redacted even if Luhn fails), CVV, OTP, PIN, passwords, bank account numbers, email, UPI ID, phone, Aadhaar, PAN, passport and date of birth.
    - **Placeholders:** each value is replaced with a token such as `[REDACTED CARD NUMBER]`.
    - **Where redacted text is used:** only the redacted text goes to Gemini, is stored in history or is written to logs.
    - **Not redacted on purpose:** pincodes and income, because eligibility checks need them.
    - **Mostly-secret messages:** if a message is mostly secrets, the bot replies locally with a safety warning.
    - **Notice to the user:** the user is shown which kinds of data were removed.
 
-3. **Local intent handling** (`chat/intents.py`): messages that are entirely "Hi", "Hello", "help", "thanks", "bye" or similar get canned replies. No Gemini or MCP call is made.
+3. **Local intent handling** (`chat/intents.py`): messages that are entirely "Hi", "Hello", "how are you" (alone or after a greeting), "help", "thanks", "bye" or similar get canned replies. No Gemini or MCP call is made.
 
 4. **Input guardrails** (`safety/guardrails.py`), enforced in code:
    - **Prompt injection** ("ignore previous instructions", "reveal your prompt"): refused.
-   - **Fraud** (stolen cards, fake salary slips, bypassing KYC): refused.
+   - **Fraud** (stolen cards, faking salary/income details or documents, lying about income, bypassing KYC, "extracting" or stealing money): refused.
    - **Tax-only questions:** redirected to a tax professional.
    - **Obvious off-topic requests** (jokes, Python code) with no credit-card words: a short redirect.
    - **Flags for Gemini:** questions about approval odds, and tax mentions mixed into card questions, are passed on as flags so Gemini adds the right constraints.
@@ -116,7 +116,7 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
    - **Parameter checks:** unknown or hidden parameters are rejected, and harmless type slips are fixed (for example `"5000"` becomes `5000`).
    - **Schema validation:** arguments are validated with `jsonschema` against the server's real input schema.
    - **Grounding rules:**
-     - `check_eligibility` requires a pincode that the user actually typed, and an income the user stated.
+     - `check_eligibility` requires a pincode that the user actually typed and that looks like a real Indian pincode (6 digits, starting 11–85), and an income the user stated.
      - `recommend_cards` checks **each** spend value separately. It must match a number the user wrote in the **current request**, either as written or converted monthly↔annual (×12 or ÷12). Lounge-visit fields can also be converted from per-month or per-year counts to per-quarter.
      - The current request is the current message, plus any earlier messages that the bot answered with a clarifying question.
      - Amounts from older messages, or from the bot's own earlier answers, are rejected. Gemini then asks the user to give or confirm them.
@@ -141,7 +141,7 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
      - Anything still unsupported is replaced with `[amount not verified]`.
    - **Approval promises:** sentences that promise approval (e.g. "guaranteed approval") are removed.
    - **Tax advice:** sentences that give tax advice are removed.
-   - **Disclaimers:** an approval or tax disclaimer is added when relevant.
+   - **Disclaimers:** an approval or tax disclaimer is added when relevant, unless the answer already contains an equivalent one.
    - **Final redaction:** the final text is redacted once more as a last defence.
 
 10. **Session transcript** (`chat/transcript.py`): the turn is appended to the session's log file. This covers the redacted user message, the endpoint, Gemini and MCP calls, and the final answer. See [Logging](#logging).

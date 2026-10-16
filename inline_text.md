@@ -296,3 +296,48 @@ lets go ahead and fix p2. Look up p2 in failures.md , in prioritised improvement
 - **`whatsapp_compare_cards` is unverified live:** its schema is from the offline snapshot; the live schema and output have not been exercised.
 - **Transcripts are larger:** each MCP call can add up to about 2 KB of tool output. Tool results are card data, not user data, but they are now written to disk.
 - **Not exercised end to end:** no app launch, test suite or Gemini/MCP call was run.
+
+---
+
+## 7. User
+
+lets go ahead and fix p3 now, same prompt as p2 before. Make sure the implementation doesn't interfere with the corrections of  P1 and P2
+
+## 7. Assistant: work performed
+
+- Read §7 items 8 and 9 of `failures.md` and the findings behind them (Turn 1 greeting, Q13 pincode and duplicate disclaimer, Q19, Q20), plus the exact messages in `logs_failure_example/`. Read `redaction.py`, `guardrails.py` and `intents.py`.
+- **Item 8, local filter hardening** (all six sub-points):
+  - **Card numbers regardless of Luhn** (`safety/redaction.py`): two rules after the Luhn rule redact a 13–19 digit group (spaces/hyphens allowed) within 15 characters before or after the word "card". The Luhn rule is unchanged.
+  - **Aadhaar mislabel** (`safety/redaction.py`): the Aadhaar rule now matches exactly 12 digits and not the first 12 of a longer spaced group. Q20's message is now redacted as a card number + CVV, and "9876" no longer leaks.
+  - **Wider fraud patterns** (`safety/guardrails.py`): faking/inflating/falsifying salary, income, employer or documents (gap widened to 40 chars); "lie about my income"; misrepresenting income or employment; "extract/steal/siphon" next to money/funds/cash. Q19 and Q20 are now blocked locally. "cash withdrawal limit", "extract the most value", "will fees drain my money" and "where does the benefit lie for my income" still pass.
+  - **Greetings** (`chat/intents.py`): a new local intent answers "how are you", "how's it going", "what's up" etc., alone or after a greeting. It is still whole-message only, so "how are you guys rating HDFC cards" goes to Gemini.
+  - **Disclaimer dedup** (`safety/guardrails.py`): the approval note is skipped when the answer already says "discretion", "decided by the bank", "final approval/decision", "cannot guarantee approval", etc. (Q13). The tax note is skipped when the answer already says it can't give tax advice or refers to a tax professional/CA.
+  - **Pincode plausibility** (`tools/registry.py`): `check_eligibility` is rejected before the MCP call when the pincode isn't 6 digits with a first-two-digit postal circle of 11–85 (Q13's 101014 fails). Gemini is told to ask the user to re-check it.
+- **Item 9 (raise with Great.cards):** not changed in code. Those are server and data fixes (forex/UPI fields, alias canonicalisation, `isError` for unknown aliases, placeholder fees, savings estimates) that only Great.cards can make.
+- **No interference with P1/P2:**
+  - Untouched: `grounding.py` (₹ check), the per-value spend grounding, the tools-required re-prompt, the P2 prompt rules, `whatsapp_compare_cards` and the transcript changes.
+  - The pincode check is a new step in the `check_eligibility` branch only, after the existing "user typed this pincode" check.
+  - The new redaction rules only match 13+ digit groups, so ₹ amounts, incomes and pincodes are not affected.
+- **README.md:** stages 2, 3, 4, 6 and 9 updated.
+- **Checks run:** `py_compile` on the four changed files, plus offline calls of `redact`, `check_input`, `match_small_talk`, `enforce_output` and `grounding_problem` on the Turn 1, Q13, Q19 and Q20 messages and on false-positive probes. All behaved as described. No app launch, no Gemini or MCP call.
+- **Not touched:** `failures.md`, the logs and unrelated code.
+
+## 7. Assistant: reply
+
+**P3 item 8 fixed (code written; offline checks only)**
+1. **Card numbers near "card":** redacted even when Luhn fails.
+2. **Aadhaar mislabel:** fixed. Q20 no longer leaks the last 4 digits or says "Aadhaar".
+3. **Fraud patterns:** widened. Q19 and Q20 are now blocked locally.
+4. **Greetings:** "Hi how are you?" is answered locally, with no Gemini call.
+5. **Disclaimers:** the approval and tax notes are no longer added when the answer already has one.
+6. **Pincodes:** implausible pincodes (e.g. 101014) are rejected before `check_eligibility`, and the user is asked to re-check.
+
+**Item 9:** not fixable in this repo; it's a list of requests for Great.cards.
+
+**Files changed:** `app/safety/redaction.py`, `app/safety/guardrails.py`, `app/chat/intents.py`, `app/tools/registry.py`, `README.md`, `inline_text.md`.
+
+**Remaining limitations**
+- **Card numbers:** 13–19 digit numbers without the word "card" nearby, and failing Luhn, are still not treated as card numbers.
+- **Fraud and dedup filters are keyword regexes:** they can still miss reworded requests and could occasionally block an unusual innocent phrasing.
+- **Pincode check is coarse:** it is a range check (11–85), not a lookup, so a non-existent pincode inside that range still passes to the tool.
+- **Not exercised end to end:** no app launch, test suite or Gemini/MCP call was run.
