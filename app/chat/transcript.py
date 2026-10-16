@@ -2,7 +2,8 @@
 
 Each conversation gets its own log file containing every turn: the user's message
 (after redaction), the chatbot's reply, the HTTP endpoint used, Gemini calls and every
-MCP tool call with its arguments and status. Only redacted text is ever written.
+MCP tool call with its arguments, status, raw (pre-cleaning) arguments
+and error text or a truncated result. Only redacted text is ever written.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from app.chat.session import Conversation
 
 logger = logging.getLogger(__name__)
 
+MAX_DETAIL_CHARS = 2_000   # per MCP call: tool result or error text kept in the transcript
+
 
 @dataclass
 class TurnTrace:
@@ -31,8 +34,11 @@ class TurnTrace:
     mcp_calls: list[dict[str, Any]] = field(default_factory=list)
     blocked_reason: str = ""
 
-    def record_mcp(self, tool: str, arguments: dict[str, Any], status: str) -> None:
-        self.mcp_calls.append({"tool": tool, "arguments": arguments, "status": status})
+    def record_mcp(self, tool: str, arguments: dict[str, Any], status: str,
+                   raw_arguments: dict[str, Any] | None = None, detail: str = "") -> None:
+        """`raw_arguments` is what Gemini sent before cleaning; `detail` is the error text or tool result."""
+        self.mcp_calls.append({"tool": tool, "arguments": arguments, "status": status,
+                               "raw_arguments": raw_arguments, "detail": detail})
 
 
 def _now() -> datetime:
@@ -107,6 +113,14 @@ class TranscriptLogger:
             for call in trace.mcp_calls:
                 arguments = json.dumps(call["arguments"], ensure_ascii=False)
                 lines.append(f"    - {call['tool']} {arguments} -> {call['status']}")
+                if call["raw_arguments"] is not None and call["raw_arguments"] != call["arguments"]:
+                    raw = json.dumps(call["raw_arguments"], ensure_ascii=False, default=str)
+                    lines.append(f"        raw arguments (before cleaning): {raw}")
+                if call["detail"]:
+                    detail = call["detail"]
+                    if len(detail) > MAX_DETAIL_CHARS:
+                        detail = detail[:MAX_DETAIL_CHARS] + f" ...[{len(call['detail']) - MAX_DETAIL_CHARS} more chars]"
+                    lines.append(f"        detail: {detail}")
         else:
             lines.append("MCP tools: none")
         lines.append(f"ASSISTANT [{reply.kind}]:")

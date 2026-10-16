@@ -248,20 +248,21 @@ class ChatPipeline:
         spec = catalog.get(name)
         if spec is None:
             logger.info("Rejected call to unavailable tool %r", name)
-            trace.record_mcp(name, {}, "rejected: tool not exposed")
+            trace.record_mcp(name, {}, "rejected: tool not exposed", dict(call.args or {}))
             return _ToolOutcome({"error": f"Tool '{name}' is not available. Use only the declared tools."})
 
-        args, errors = prepare_arguments(spec, dict(call.args or {}))
+        raw_args = dict(call.args or {})
+        args, errors = prepare_arguments(spec, raw_args)
         if errors:
             logger.info("Rejected %s: %d schema error(s)", name, len(errors))
-            trace.record_mcp(name, args, "rejected: schema validation failed")
+            trace.record_mcp(name, args, "rejected: schema validation failed", raw_args, " | ".join(errors))
             return _ToolOutcome({"error": "Invalid arguments: " + " | ".join(errors)
                                  + " Fix them, or ask the user for the missing information."})
 
         problem = grounding_problem(name, args, user_text, request_text)
         if problem:
             logger.info("Rejected %s: arguments not grounded in user input", name)
-            trace.record_mcp(name, args, "rejected: values not provided by the user")
+            trace.record_mcp(name, args, "rejected: values not provided by the user", raw_args, problem)
             return _ToolOutcome({"error": problem})
 
         logger.info("Calling MCP tool %s with fields %s", name, sorted(args))
@@ -269,11 +270,11 @@ class ChatPipeline:
             result = await conn.call(name, args)
         except ToolServiceError as exc:
             logger.warning("%s", exc)
-            trace.record_mcp(name, args, "failed: MCP server unavailable")
+            trace.record_mcp(name, args, "failed: MCP server unavailable", raw_args, str(exc))
             return _ToolOutcome({"error": "The Great.cards service failed for this request. Tell the user the "
                                           "data is temporarily unavailable; do not invent any card data."})
         if not result.ok:
-            trace.record_mcp(name, args, "error returned by tool")
+            trace.record_mcp(name, args, "error returned by tool", raw_args, result.text)
             return _ToolOutcome({"error": result.data}, called=True)
-        trace.record_mcp(name, args, "ok")
+        trace.record_mcp(name, args, "ok", raw_args, result.text)
         return _ToolOutcome({"result": result.data}, called=True, evidence_text=result.text)

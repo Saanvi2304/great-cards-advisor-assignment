@@ -175,6 +175,8 @@ Every chat session gets its own log file, created on the session's first message
 - which kinds of sensitive data were redacted, and whether a local guardrail blocked the message
 - **Gemini API** usage: the number of `generateContent` calls and the model name
 - every **MCP tool call**, with its arguments and status: `ok`, `error returned by tool`, `rejected: schema validation failed`, `rejected: values not provided by the user` or `failed: MCP server unavailable`
+  - the **raw arguments** Gemini sent, when cleaning changed them (e.g. a parameter removed as not accepted)
+  - a `detail` line with the validation/grounding error text, or the tool result truncated to 2,000 characters
 - the **chatbot's answer**, its kind (`local`, `clarification`, `answer`, `blocked` or `error`) and any privacy notices
 
 Clicking **New chat** (`POST /api/reset`) writes a closing entry to the current file, and the next message starts a new file.
@@ -192,6 +194,7 @@ USER:
 Gemini API: 2 generateContent call(s) [gemini-2.5-flash-lite]
 MCP tools:
     - recommend_cards {"amazon_spends": 8000, "online_food_ordering": 3000} -> ok
+        detail: {"recommendations":[...]} ...[1840 more chars]
 ASSISTANT [answer]:
     ...
 ```
@@ -317,6 +320,7 @@ great-cards/
 | `list_cards` | Browsing and filtering (category, lifetime free, network, fee range) |
 | `get_card_details` | Deep dive into one card |
 | `compare_cards` | Side-by-side comparison of 2–3 cards |
+| `whatsapp_compare_cards` | Comparison of 2–3 cards using the user's stated spends (`spend_profile`, grounded like `recommend_cards`) |
 | `check_eligibility` | Cards the user can apply for (pincode, income, employment) |
 | `generate_content_brief` | "Best cards for a category", "is a card worth the fee", bank rankings, upgrade paths |
 | `whatsapp_resolve_card_or_category` | Turning a card name the user typed into the exact card alias |

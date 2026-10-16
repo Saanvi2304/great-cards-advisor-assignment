@@ -257,3 +257,42 @@ Fix all issues marked P1 in `failures.md`. Inspect the relevant code and impleme
   - It may re-prompt harmless no-tool replies that mention a percentage.
   - Rates and benefits written without ₹, % or a card name are not detected.
 - **Gemini `ANY` mode:** behaviour depends on Gemini honouring it. The retry happens once only.
+
+---
+
+## 6. User
+
+lets go ahead and fix p2. Look up p2 in failures.md , in prioritised improvement s 7th point,  4th - 7th. Do not change  failures.md file. Make as minimal changes as possible and refer codebase_mind_map.md if needed. After completing the task update and add my prompt and your answer to inline_text.md
+
+## 6. Assistant: work performed
+
+- Read §7 items 4–7 of `failures.md` (and the Q2, Q3, Q6–Q9, Q14 findings they come from) and `codebase_mind_map.md`. Read `registry.py`, `prompts.py`, `pipeline.py`, `transcript.py`, `client.py` and the `whatsapp_compare_cards` schema in `data/mcp_tools.json`.
+- **P2-4, card-level caps/exclusions and tool order** (`llm/prompts.py`): two rules were added. Questions about caps, exclusions, lounge conditions or surcharge-waiver limits must call `get_card_details` for the top picks and quote each card's own terms, never "typically/usually". Ranked tool results must be shown in the tool's order, with no cards dropped or reordered (Q14).
+- **P2-5, clarify or disclose assumptions** (`llm/prompts.py`): one rule. Ambiguous categories (online/offline groceries, the Amazon/Flipkart split, which utility) are asked about with `ask_clarification`. If the model assumes instead, it must say so in one line.
+- **P2-6, spend-aware comparisons** (`tools/registry.py`, `llm/prompts.py`, `static/js/chat.js`)
+  - `whatsapp_compare_cards` was added to `EXPOSED_TOOLS`, so its live schema (with `spend_profile`) is offered to Gemini.
+  - Routing rule: 2–3 named cards plus spends → `whatsapp_compare_cards`; without spends → `compare_cards` as before.
+  - Its `spend_profile` values go through the same P1 per-value grounding as `recommend_cards` (shared helper `_ungrounded_spends`). A comparison without spends is not checked.
+  - The UI shows it with the "Card comparison" tag.
+- **P2-7, observability** (`chat/transcript.py`, `chat/pipeline.py`)
+  - `TurnTrace.record_mcp` takes the raw (pre-cleaning) arguments and a detail text.
+  - The transcript prints `raw arguments (before cleaning)` when cleaning changed them, and a `detail:` line with the schema/grounding error text, the MCP failure, or the tool result. Detail is cut at 2,000 characters with a "more chars" count. Results Gemini saw truncated still carry their `...[truncated]` marker.
+- **README.md:** logging section (raw arguments and detail lines, example entry) and the exposed-tools table.
+- **Checks run:** `py_compile` on the four changed Python files, and an offline call of `grounding_problem` for `whatsapp_compare_cards` (grounded spend → accepted, invented spend → rejected, no spends → accepted) and of `TurnTrace.record_mcp`. No app launch and no Gemini or MCP call.
+- **Not touched:** `failures.md`, the logs, P1/P3 behaviour and unrelated code.
+
+## 6. Assistant: reply
+
+**P2 issues fixed (code written; only offline checks run)**
+1. **Caps/exclusions from card data (item 4):** prompt now requires `get_card_details` for the top picks when caps, exclusions or lounge/surcharge conditions are asked, forbids "typically" content, and requires tool rankings in tool order.
+2. **Clarify or disclose assumptions (item 5):** prompt now requires asking about ambiguous spend categories, or stating the assumption in the answer.
+3. **Spend-aware comparisons (item 6):** `whatsapp_compare_cards` is exposed, routed for comparisons that include spends, and its `spend_profile` is grounded like `recommend_cards`.
+4. **Observability (item 7):** session transcripts now log raw pre-cleaning arguments, validation/grounding error text and the tool result (truncated to 2,000 chars).
+
+**Files changed:** `app/tools/registry.py`, `app/llm/prompts.py`, `app/chat/pipeline.py`, `app/chat/transcript.py`, `app/static/js/chat.js`, `README.md`, `inline_text.md`.
+
+**Remaining limitations**
+- **Items 4 and 5 are prompt-only:** nothing in code forces a `get_card_details` call or detects an undisclosed assumption, so they depend on Gemini following the rules.
+- **`whatsapp_compare_cards` is unverified live:** its schema is from the offline snapshot; the live schema and output have not been exercised.
+- **Transcripts are larger:** each MCP call can add up to about 2 KB of tool output. Tool results are card data, not user data, but they are now written to disk.
+- **Not exercised end to end:** no app launch, test suite or Gemini/MCP call was run.

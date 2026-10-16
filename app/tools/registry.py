@@ -23,6 +23,7 @@ EXPOSED_TOOLS: dict[str, frozenset[str]] = {
     "list_cards": frozenset({"bank_ids", "credit_score", "sort_by"}),
     "get_card_details": frozenset(),
     "compare_cards": frozenset(),
+    "whatsapp_compare_cards": frozenset(),
     "check_eligibility": frozenset(),
     "whatsapp_resolve_card_or_category": frozenset(),
     "generate_content_brief": frozenset({
@@ -175,11 +176,20 @@ def grounding_problem(name: str, args: dict[str, Any], user_text: str, request_t
             return ("The user has not stated any spending amounts, so a personalised ranking would rest on guesses. "
                     "Ask for their main monthly spends with ask_clarification, or use list_cards / "
                     "generate_content_brief for a general category answer.")
-        stated = numbers_in(request_text)
-        ungrounded = sorted(k for k, v in spends.items()
-                            if not _derived_from(v, stated, _LOUNGE_FACTORS if "lounge" in k else _SPEND_FACTORS))
-        if ungrounded:
-            return (f"These values are not amounts the user stated in this request: {', '.join(ungrounded)}. "
-                    "Do not estimate them or reuse amounts from earlier answers. Call ask_clarification to ask "
-                    "the user for those amounts (or to confirm earlier ones), or leave those fields out.")
+        return _ungrounded_spends(spends, request_text)
+    if name == "whatsapp_compare_cards" and isinstance(args.get("spend_profile"), dict):
+        spends = {k: v for k, v in args["spend_profile"].items()
+                  if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0}
+        return _ungrounded_spends(spends, request_text)
+    return None
+
+
+def _ungrounded_spends(spends: dict[str, Any], request_text: str) -> str | None:
+    stated = numbers_in(request_text)
+    ungrounded = sorted(k for k, v in spends.items()
+                        if not _derived_from(v, stated, _LOUNGE_FACTORS if "lounge" in k else _SPEND_FACTORS))
+    if ungrounded:
+        return (f"These values are not amounts the user stated in this request: {', '.join(ungrounded)}. "
+                "Do not estimate them or reuse amounts from earlier answers. Call ask_clarification to ask "
+                "the user for those amounts (or to confirm earlier ones), or leave those fields out.")
     return None

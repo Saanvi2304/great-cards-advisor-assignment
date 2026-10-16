@@ -13,6 +13,7 @@
     list_cards: "Card catalogue",
     get_card_details: "Card details",
     compare_cards: "Card comparison",
+    whatsapp_compare_cards: "Card comparison",
     check_eligibility: "Eligibility check",
     generate_content_brief: "Category research",
     whatsapp_resolve_card_or_category: "Card lookup",
