@@ -62,6 +62,16 @@ A web chatbot that helps Indian users choose credit cards based on their spendin
 
    > **Note on `logs_failure_example/`:** The `logs_failure_example/` directory contains sample logs from failure testing to illustrate how logs will look after running the app. It has nothing to do with the running of the app and is just an example.
 
+8. **Run the automated offline test suite (46 tests)**
+   ```powershell
+   # If your venv is activated:
+   python -m unittest discover -s tests -v
+
+   # Or run directly via the venv python path:
+   .\venv\Scripts\python -m unittest discover -s tests -v
+   ```
+   Runs 46 offline unit and regression tests in ~0.02s without requiring internet access or Gemini/MCP API keys (covers spend-period ambiguity, Rupee grounding, regulatory guardrails invariance, and financial PII redaction).
+
 ### Useful endpoints
 | Endpoint | Method | Purpose |
 |---|---|---|
@@ -114,7 +124,7 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
 
 3. **Local intent handling** (`chat/intents.py`): messages that are entirely "Hi", "Hello", "how are you", "what's up" or "wassup" (alone or after a greeting), "help", "thanks", "bye" or similar get canned replies. No Gemini or MCP call is made.
 
-4. **Input guardrails** (`safety/guardrails.py`), enforced in code. Together with the output filter in stage 9, they can be switched off at runtime from `/admin` (on by default, see [Admin console](#admin-console)); redaction and grounding always run:
+4. **Input guardrails** (`safety/guardrails.py`), enforced in code. They can be switched off at runtime from `/admin` (on by default, see [Admin console](#admin-console)); the approval and tax output rules in stage 9, redaction and grounding always run:
    - **Prompt injection** ("ignore previous instructions", "reveal your prompt"): refused.
    - **Fraud** (stolen cards, faking salary/income details or documents, lying about income, bypassing KYC, "extracting" or stealing money): refused.
    - **Tax-only questions:** redirected to a tax professional.
@@ -207,9 +217,10 @@ Open `/admin`. The sidebar has five sections:
 
 **Guardrails switch**
 
-When OFF, new turns skip `check_input` (prompt injection, fraud, tax-only and off-topic blocking, plus the approval and tax flags sent to Gemini) and `enforce_output` (approval-promise and tax-advice removal, disclaimers). The system prompt is unchanged.
+When OFF, new turns skip `check_input` (prompt injection, fraud, tax-only and off-topic blocking). The system prompt is unchanged.
 
 These always stay on:
+- the regulatory rules: `enforce_output` removes approval promises and tax advice and adds the disclaimers, and the approval and tax flags are still sent to Gemini (`compliance_flags`);
 - sensitive-data redaction of input, answers and logs;
 - schema validation;
 - spend, pincode and income grounding;
@@ -247,7 +258,8 @@ Every chat session gets its own log file, created on the session's first message
 - **Gemini API** usage: the number of `generateContent` calls and the model name
 - every **MCP tool call**, with its arguments and status: `ok`, `error returned by tool`, `rejected: schema validation failed`, `rejected: values not provided by the user` or `failed: MCP server unavailable`
   - the **raw arguments** Gemini sent, when cleaning changed them (e.g. a parameter removed as not accepted)
-  - a `detail` line with the validation/grounding error text, or the tool result truncated to 2,000 characters
+  - a `detail` line with the validation/grounding error text, or the full, untruncated tool response as the MCP server returned it (newlines escaped to keep it on one line)
+  - a `note` line when Gemini was given only the first 15,000 characters of that response
 - the **chatbot's answer**, its kind (`local`, `clarification`, `answer`, `blocked` or `error`) and any privacy notices
 
 Each chat in the dashboard has its own file. Its header includes a `Chat    : <chat id>` line, which is how the sidebar finds the file again; older logs without that line use the file name as their id. `POST /api/reset` (API clients only) writes a closing entry to the current file, and the next message starts a new file.
@@ -322,24 +334,34 @@ great-cards/
 │       ├── js/ui.js
 │       ├── js/chat.js
 │       └── js/admin.js
-├── logs/                     (created on startup, git-ignored)
+├── data/
+│   ├── mcp_tools.json            (snapshot catalog of 14 live MCP tool schemas)
+│   └── audit/                    (raw untruncated MCP responses verifying backend defects)
+│       ├── check_eligibility_120000.json
+│       ├── check_eligibility_800000.json
+│       ├── eligibility_income_floor_120000.json
+│       └── recommend_cards_amazon_15000.json
+├── logs/                         (created on startup, git-ignored)
 │   ├── app.log
 │   └── sessions/
 │       └── session_<time>_<tag>_<suffix>.log
-├── logs_failure_example/     (example failure testing logs; not used at runtime)
+├── logs_failure_example/         (example failure testing logs; not used at runtime)
 ├── tests/
-│   └── test_spend_period.py  (offline regression checks)
+│   ├── test_spend_period.py      (16 offline tests: spend period ambiguity & multipliers)
+│   ├── test_grounding.py         (9 offline tests: turn-scoped figure grounding)
+│   ├── test_guardrails_invariance.py (8 offline tests: permanent approval & tax rules)
+│   └── test_redaction.py         (13 offline tests: Luhn, near-card, Aadhaar, CVV)
 ├── venv/
 ├── .env
 ├── .env.example
 ├── .gitignore
-├── codebase_mind_map.md      (complete architectural mind map for AI context)
-├── failures.md               (systematic 20-question failure report)
-├── product_owner_note.md     (one-page executive note to the product owner)
-├── inline_text.md            (development conversation log)
+├── codebase_mind_map.md          (complete architectural mind map for AI context)
+├── failures.md                   (systematic 20-question audit & Section 8 engineering handoff)
+├── product_owner_note.md         (one-page executive note to the product owner)
+├── inline_text.md                (development conversation log)
 ├── requirements.txt
-├── run.bat                   (Windows launcher script)
-├── venv.bat                  (Windows venv activation script)
+├── run.bat                       (Windows launcher script)
+├── venv.bat                      (Windows venv activation script)
 └── README.md
 ```
 
@@ -347,12 +369,13 @@ great-cards/
 | Path | Responsibility |
 |---|---|
 | `app/` | All application code (Python package). |
+| `data/` | Offline tool schemas (`mcp_tools.json`) and raw audit evidence (`data/audit/`) capturing untruncated live MCP server outputs cited in failure handoffs. |
 | `codebase_mind_map.md` | Comprehensive architectural and structural mind map of the entire codebase and data flow, specifically curated for AI coding assistants (and developers) to get the whole idea of the project. |
-| `failures.md` | Detailed 20-question failure analysis report against the assignment requirements, classifying findings across Model, MCP tool, Data, and App logic. |
-| `product_owner_note.md` | Executive one-page briefing for the product owner answering what users would get wrong, what was fixed, the latency-vs-quality trade-off, ranked MCP/data improvements, and future scaling. |
+| `failures.md` | Detailed 20-question failure analysis report against the assignment requirements, classifying findings across Model, MCP tool, Data, and App logic. Includes **Section 8: Engineering handoff for MCP server defects** with reproductions, worked examples, and acceptance tests. |
+| `product_owner_note.md` | Executive one-page briefing for the product owner answering what users would get wrong, what was fixed, the latency-vs-quality trade-off, ranked MCP/data improvements, live test verification, and proposed additional guardrails. |
 | `logs/` | Runtime logs, created automatically on startup and git-ignored: `app.log` (application log) and `sessions/` (one transcript file per chat session). See [Logging](#logging). |
 | `logs_failure_example/` | Contains logs from failure testing as an example of how logs will look after running the app. It has nothing to do with the running of the app and is just an example. |
-| `tests/test_spend_period.py` | Offline regression checks (no Gemini or MCP calls) for the spend-period rule and the P1 figure grounding. Run with `venv\Scripts\python -m unittest discover -s tests -v`. |
+| `tests/` | Complete 46-test offline safety suite (no Gemini or MCP calls): spend-period ambiguity (`test_spend_period.py`), Rupee grounding (`test_grounding.py`), regulatory guardrails invariance (`test_guardrails_invariance.py`), and privacy redaction (`test_redaction.py`). Run with `python -m unittest discover -s tests -v` (or `.\venv\Scripts\python -m unittest discover -s tests -v`). |
 | `venv/` | The existing Python virtual environment. |
 | `.env` | Your real configuration and secrets (never committed or logged). |
 | `.env.example` | Template listing the required environment variables. |

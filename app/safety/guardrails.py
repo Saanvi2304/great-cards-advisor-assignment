@@ -96,6 +96,12 @@ class InputCheck:
     mentions_tax: bool = False
 
 
+def compliance_flags(text: str) -> InputCheck:
+    """The approval and tax flags only, never blocking. Used when the input guardrails are switched off:
+    the approval and tax rules are regulatory and stay on regardless."""
+    return InputCheck(approval_question=bool(_APPROVAL_QUESTION.search(text)), mentions_tax=bool(_TAX.search(text)))
+
+
 def check_input(text: str) -> InputCheck:
     """Decide locally whether a message may proceed to Gemini, and with which constraints."""
     in_domain = bool(_CARD_DOMAIN.search(text))
@@ -103,12 +109,12 @@ def check_input(text: str) -> InputCheck:
         return InputCheck(blocked=True, reply=_INJECTION_REPLY, reason="prompt_injection")
     if _FRAUD.search(text):
         return InputCheck(blocked=True, reply=_FRAUD_REPLY, reason="fraud")
-    mentions_tax = bool(_TAX.search(text))
-    if mentions_tax and not in_domain:
+    flags = compliance_flags(text)
+    if flags.mentions_tax and not in_domain:
         return InputCheck(blocked=True, reply=_TAX_REPLY, reason="tax_advice")
     if _OFF_TOPIC.search(text) and not in_domain:
         return InputCheck(blocked=True, reply=_OFF_TOPIC_REPLY, reason="off_topic")
-    return InputCheck(approval_question=bool(_APPROVAL_QUESTION.search(text)), mentions_tax=mentions_tax)
+    return flags
 
 
 def _filter_sentences(text: str, pattern: re.Pattern[str], keep_negated: bool) -> tuple[str, bool]:

@@ -25,8 +25,6 @@ from app.chat.session import Conversation
 
 logger = logging.getLogger(__name__)
 
-MAX_DETAIL_CHARS = 2_000   # per MCP call: tool result or error text kept in the transcript
-
 
 @dataclass
 class TurnTrace:
@@ -40,10 +38,12 @@ class TurnTrace:
     guardrails: bool = True
 
     def record_mcp(self, tool: str, arguments: dict[str, Any], status: str,
-                   raw_arguments: dict[str, Any] | None = None, detail: str = "") -> None:
-        """`raw_arguments` is what Gemini sent before cleaning; `detail` is the error text or tool result."""
+                   raw_arguments: dict[str, Any] | None = None, detail: str = "",
+                   sent_chars: int | None = None) -> None:
+        """`raw_arguments` is what Gemini sent before cleaning; `detail` is the error text or the full tool
+        result; `sent_chars` is set when Gemini was given a truncated copy of that result."""
         self.mcp_calls.append({"tool": tool, "arguments": arguments, "status": status,
-                               "raw_arguments": raw_arguments, "detail": detail})
+                               "raw_arguments": raw_arguments, "detail": detail, "sent_chars": sent_chars})
 
 
 def _now() -> datetime:
@@ -117,7 +117,7 @@ class TranscriptLogger:
         if trace.redacted:
             lines.append(f"Redacted before processing: {', '.join(trace.redacted)}")
         if not trace.guardrails:
-            lines.append("Guardrails: OFF (input and output guardrails skipped; redaction and grounding still on)")
+            lines.append("Guardrails: OFF (input guardrails skipped; approval/tax rules, redaction and grounding still on)")
         if trace.blocked_reason:
             lines.append(f"Guardrail: blocked locally ({trace.blocked_reason})")
         if trace.llm_calls:
@@ -133,10 +133,12 @@ class TranscriptLogger:
                     raw = json.dumps(call["raw_arguments"], ensure_ascii=False, default=str)
                     lines.append(f"        raw arguments (before cleaning): {raw}")
                 if call["detail"]:
-                    detail = call["detail"]
-                    if len(detail) > MAX_DETAIL_CHARS:
-                        detail = detail[:MAX_DETAIL_CHARS] + f" ...[{len(call['detail']) - MAX_DETAIL_CHARS} more chars]"
+                    # The full response, untruncated, kept on one line so the transcript stays parseable.
+                    detail = call["detail"].replace("\r", "\\r").replace("\n", "\\n")
                     lines.append(f"        detail: {detail}")
+                if call.get("sent_chars") is not None:
+                    lines.append(f"        note: Gemini saw only the first {call['sent_chars']:,} of "
+                                 f"{len(call['detail']):,} chars of this response")
         else:
             lines.append("MCP tools: none")
         lines.append(f"ASSISTANT [{reply.kind}]:")

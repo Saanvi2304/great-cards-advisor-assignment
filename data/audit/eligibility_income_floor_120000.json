@@ -1,0 +1,207 @@
+{
+ "count": 201,
+ "rows": [
+  {
+   "name": "SBI Cashback Credit Card",
+   "alias": "sbi-cashback-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 65,
+    "income_salaried_lpa": 3,
+    "income_self_emp_lpa": 3,
+    "min_income_monthly": 30000,
+    "crif_salaried": 750,
+    "crif_self_emp": 750
+   },
+   "error": null
+  },
+  {
+   "name": "Axis Flipkart Credit Card",
+   "alias": "axis-flipkart-credit-card",
+   "eligibility": {
+    "min_age": 18,
+    "max_age": 70,
+    "income_salaried_lpa": 3,
+    "income_self_emp_lpa": 3.5,
+    "min_income_monthly": 25000,
+    "crif_salaried": 720,
+    "crif_self_emp": 720
+   },
+   "error": null
+  },
+  {
+   "name": "HSBC Cashback Credit Card",
+   "alias": "hsbc-cashback-credit-card",
+   "eligibility": null,
+   "error": "Card not found: hsbc-cashback-credit-card"
+  },
+  {
+   "name": "Kiwi Klick Credit Card",
+   "alias": "kiwi-klick-credit-card",
+   "eligibility": {
+    "min_age": 25,
+    "max_age": 60,
+    "income_salaried_lpa": 2,
+    "income_self_emp_lpa": null,
+    "min_income_monthly": 16000,
+    "crif_salaried": 760,
+    "crif_self_emp": null
+   },
+   "error": null
+  },
+  {
+   "name": "SBI Simply Click Credit Card",
+   "alias": "sbi-simply-click-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 60,
+    "income_salaried_lpa": 3,
+    "income_self_emp_lpa": 3,
+    "min_income_monthly": 20000,
+    "crif_salaried": 750,
+    "crif_self_emp": 750
+   },
+   "error": null
+  },
+  {
+   "name": "Flipkart SBI Credit Card",
+   "alias": "flipkart-sbi-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 70,
+    "income_salaried_lpa": 3.6,
+    "income_self_emp_lpa": 3.6,
+    "min_income_monthly": 30000,
+    "crif_salaried": 720,
+    "crif_self_emp": 720
+   },
+   "error": null
+  },
+  {
+   "name": "Swiggy BLCK HDFC Credit Card",
+   "alias": "swiggy-blck-hdfc-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 60,
+    "income_salaried_lpa": 12,
+    "income_self_emp_lpa": 12,
+    "min_income_monthly": 100000,
+    "crif_salaried": 720,
+    "crif_self_emp": 720
+   },
+   "error": null
+  },
+  {
+   "name": "IDFC FIRST Millennia Credit Card",
+   "alias": "idfc-first-millennia-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 65,
+    "income_salaried_lpa": 3,
+    "income_self_emp_lpa": 4,
+    "min_income_monthly": 25000,
+    "crif_salaried": 750,
+    "crif_self_emp": 750
+   },
+   "error": null
+  },
+  {
+   "name": "Tata Neu Infinity HDFC Bank Credit Card",
+   "alias": "tata-neu-hdfc-bank-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 60,
+    "income_salaried_lpa": 9.6,
+    "income_self_emp_lpa": 9.6,
+    "min_income_monthly": 80000,
+    "crif_salaried": 720,
+    "crif_self_emp": 720
+   },
+   "error": null
+  },
+  {
+   "name": "Axis MyZone Credit Card",
+   "alias": "axis-bank-myzone-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 65,
+    "income_salaried_lpa": 3,
+    "income_self_emp_lpa": 3,
+    "min_income_monthly": 25000,
+    "crif_salaried": 720,
+    "crif_self_emp": 720
+   },
+   "error": null
+  },
+  {
+   "name": "HDFC Millennia Credit Card",
+   "alias": "hdfc-millenia-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 60,
+    "income_salaried_lpa": 4,
+    "income_self_emp_lpa": 6,
+    "min_income_monthly": 35000,
+    "crif_salaried": 720,
+    "crif_self_emp": 720
+   },
+   "error": null
+  },
+  {
+   "name": "Standard Chartered Smart Credit Card",
+   "alias": "stanc-smart-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 65,
+    "income_salaried_lpa": 4,
+    "income_self_emp_lpa": 4,
+    "min_income_monthly": 30000,
+    "crif_salaried": 720,
+    "crif_self_emp": 720
+   },
+   "error": null
+  },
+  {
+   "name": "HSBC Travel One Credit Card",
+   "alias": "hsbc-travel-one",
+   "eligibility": {
+    "min_age": 25,
+    "max_age": 65,
+    "income_salaried_lpa": 6,
+    "income_self_emp_lpa": 12,
+    "min_income_monthly": 35000,
+    "crif_salaried": 750,
+    "crif_self_emp": 750
+   },
+   "error": null
+  },
+  {
+   "name": "Indian Oil RBL Bank XTRA Credit Card",
+   "alias": "indian-oil-rbl-bank-xtra-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 70,
+    "income_salaried_lpa": 3,
+    "income_self_emp_lpa": 3,
+    "min_income_monthly": 15000,
+    "crif_salaried": 720,
+    "crif_self_emp": 720
+   },
+   "error": null
+  },
+  {
+   "name": "IDFC FIRST Wealth Credit Card",
+   "alias": "idfc-first-wealth-credit-card",
+   "eligibility": {
+    "min_age": 21,
+    "max_age": 60,
+    "income_salaried_lpa": 36,
+    "income_self_emp_lpa": 36,
+    "min_income_monthly": 100000,
+    "crif_salaried": 720,
+    "crif_self_emp": 720
+   },
+   "error": null
+  }
+ ]
+}

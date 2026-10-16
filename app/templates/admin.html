@@ -297,8 +297,8 @@
                 </button>
               </div>
               <div class="confirm" id="guard-confirm" hidden>
-                <p><strong>Turn guardrails off?</strong> Prompt-injection, fraud, tax-only and off-topic messages will reach Gemini,
-                  and answers won't be filtered for approval promises or tax advice. Redaction and grounding stay on.</p>
+                <p><strong>Turn guardrails off?</strong> Prompt-injection, fraud, tax-only and off-topic messages will reach Gemini.
+                  The approval and tax rules, redaction and grounding stay on.</p>
                 <div class="actions">
                   <button type="button" class="btn btn-danger" id="guard-confirm-off">Turn off</button>
                   <button type="button" class="btn" id="guard-confirm-cancel">Keep on</button>
@@ -314,13 +314,12 @@
                   <li><strong>Fraud</strong> (stolen cards, faking income or documents, bypassing KYC) refused locally</li>
                   <li><strong>Tax-only questions</strong> redirected to a tax professional</li>
                   <li><strong>Off-topic requests</strong> (jokes, code) answered with a short redirect</li>
-                  <li><strong>Approval and tax flags</strong> passed to Gemini as extra constraints</li>
-                  <li><strong>Output filter</strong>: removes approval promises and tax advice, adds disclaimers</li>
                 </ul>
               </article>
               <article class="card">
                 <h2 class="card-title">Always on</h2>
                 <ul class="check-list always">
+                  <li><strong>No approval promises, no tax advice</strong>: removed from answers, with disclaimers added (regulatory, never switched off)</li>
                   <li><strong>Sensitive-data redaction</strong> of input, answers and logs (card numbers, CVV, OTP, Aadhaar, PAN…)</li>
                   <li><strong>Schema validation</strong> of every tool call against the live MCP schema</li>
                   <li><strong>Spend, pincode and income grounding</strong>: values must come from the user (P1)</li>

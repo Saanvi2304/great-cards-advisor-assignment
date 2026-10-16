@@ -41,6 +41,11 @@ class ToolResult:
     ok: bool
     data: Any      # what Gemini sees
     text: str      # serialised form, used as grounding evidence
+    raw: str       # the full serialised response, never truncated (kept in transcripts for auditing)
+
+    @property
+    def truncated(self) -> bool:
+        return self.text != self.raw
 
 
 def _to_result(result: Any, max_chars: int = MAX_RESULT_CHARS) -> ToolResult:
@@ -52,11 +57,12 @@ def _to_result(result: Any, max_chars: int = MAX_RESULT_CHARS) -> ToolResult:
             data = json.loads(raw)
         except (ValueError, TypeError):
             data = raw
-    text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    raw = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    text = raw
     if len(text) > max_chars:
         text = text[:max_chars] + " ...[truncated]"
         data = text
-    return ToolResult(ok=not result.isError, data=data, text=text)
+    return ToolResult(ok=not result.isError, data=data, text=text, raw=raw)
 
 
 class ToolConnection:

@@ -148,12 +148,20 @@ mindmap
           Hot Configuration Mutation
           Guardrail Confirmation Modals
           Dynamic Route Filtering
-    Testing & QA - tests/
+    Testing & QA - tests/ (46 Offline Unit Tests)
       [d:/great-cards/tests/test_spend_period.py]
-        16 Offline Regression Checks
-        Unstated Spend Period Clarification
-        Period-matched Multiplier Enforcement
-        P1 Grounding Preservation
+        16 Spend Period & Multiplier Checks
+      [d:/great-cards/tests/test_grounding.py]
+        9 Figure Grounding & Range Checks
+      [d:/great-cards/tests/test_guardrails_invariance.py]
+        8 Permanent Approval & Tax Rule Invariants
+      [d:/great-cards/tests/test_redaction.py]
+        13 Luhn, Aadhaar, CVV & PII Tests
+    Audit Evidence & Reference - data/
+      [d:/great-cards/data/mcp_tools.json]
+        14 MCP Tools Schema Catalog Snapshot
+      [d:/great-cards/data/audit/]
+        Raw Live MCP Responses (Q1 Net Savings & Eligibility Income Floor)
     Runtime Artifacts
       [logs/app.log]
       [logs/sessions/*.log]
@@ -252,8 +260,8 @@ graph TD
 | [.env](file:///d:/great-cards/.env) | Local environment secrets (untracked) | Live API keys, server URLs, and admin authorization token. | Protected |
 | [.gitignore](file:///d:/great-cards/.gitignore) | Git exclusion patterns | Excludes `.env`, `venv/`, `logs/`, `__pycache__/`, `.pytest_cache/`. | Baseline |
 | [inline_text.md](file:///d:/great-cards/inline_text.md) | Comprehensive project build & conversation log | Chronological record of prompts, implementation details, and verification reports. | Maintained across all iterations |
-| [failures.md](file:///d:/great-cards/failures.md) | Systematic failure analysis report | Comprehensive 20-question audit evaluating guardrail compliance, tool selection, and grounding. | Baseline audit reference |
-| [product_owner_note.md](file:///d:/great-cards/product_owner_note.md) | Executive brief to Product Owner (~1 page) | Plain-language executive note covering ungrounded failure modes, fixes, quality-vs-latency trade-offs, ranked MCP backlog, and Redis architecture. | Final submission deliverable |
+| [failures.md](file:///d:/great-cards/failures.md) | Systematic failure analysis report | Comprehensive 20-question audit & Section 8 Engineering Handoff with reproductions, worked examples, and acceptance tests. | Baseline audit reference |
+| [product_owner_note.md](file:///d:/great-cards/product_owner_note.md) | Executive brief to Product Owner (~1 page) | Plain-language executive note covering ungrounded failure modes, server defects, quality-vs-latency trade-offs, ranked MCP backlog, and proposed guardrails. | Final submission deliverable |
 | [codebase_mind_map.md](file:///d:/great-cards/codebase_mind_map.md) | Visual & structural codebase mind map | Architectural and relationship blueprint of the repository. | Maintained current |
 | [run.bat](file:///d:/great-cards/run.bat) | Windows launcher script | Starts FastAPI application via `uvicorn app.main:app --reload`. | Convenience script |
 | [venv.bat](file:///d:/great-cards/venv.bat) | Virtual environment activation script | Activates local virtual environment (`venv\scripts\activate`). | Convenience script |

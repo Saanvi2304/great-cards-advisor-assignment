@@ -25,9 +25,9 @@ from app.llm.gemini import GeminiClient, LLMError
 from app.llm.prompts import (CLARIFY_DECLARATION, CLARIFY_TOOL, REPAIR_PROMPT, TOOLS_REQUIRED_PROMPT,
                              build_system_prompt)
 from app.safety.grounding import expand_evidence, numbers_in, strip_unsupported_amounts, unsupported_amounts
-from app.safety.guardrails import InputCheck, check_input, enforce_output
+from app.safety.guardrails import InputCheck, check_input, compliance_flags, enforce_output
 from app.safety.redaction import has_meaningful_content, redact
-from app.tools.client import McpToolGateway, ToolConnection, ToolServiceError
+from app.tools.client import MAX_RESULT_CHARS, McpToolGateway, ToolConnection, ToolServiceError
 from app.tools.registry import ToolCatalog, grounding_problem, prepare_arguments
 
 logger = logging.getLogger(__name__)
@@ -91,8 +91,8 @@ class ChatPipeline:
         self._llm = llm
         self._tools = tools
         self._transcripts = transcripts
-        # Input/output guardrails (safety/guardrails.py). Redaction, schema validation and P1 grounding
-        # are not affected by this switch and always run.
+        # Input guardrails (safety/guardrails.py): injection, fraud, tax-only and off-topic blocking.
+        # Redaction, schema validation, P1 grounding and the approval/tax output rules always run.
         self.guardrails_enabled = True
 
     def configure(self, llm: GeminiClient | None, tools: McpToolGateway | None, guardrails_enabled: bool) -> None:
@@ -159,7 +159,7 @@ class ChatPipeline:
         if local_reply:
             return ChatReply(local_reply, "local"), text
 
-        check = check_input(text) if trace.guardrails else InputCheck()
+        check = check_input(text) if trace.guardrails else compliance_flags(text)
         if check.blocked:
             logger.info("Input blocked locally: %s", check.reason)
             trace.blocked_reason = check.reason
@@ -226,7 +226,7 @@ class ChatPipeline:
                         question = str((call.args or {}).get("question", "")).strip()
                         if question:
                             return self._finish(question, "clarification", tools_used, check,
-                                                self._allowed_figures(evidence, request_text), trace.guardrails)
+                                                self._allowed_figures(evidence, request_text))
                     outcome = await self._execute(conn, catalog, call, user_text, request_text, trace)
                     if outcome.called:
                         tools_used.append(call.name)
@@ -253,7 +253,7 @@ class ChatPipeline:
                 draft = revised or draft
             except LLMError:
                 pass
-        return self._finish(draft, "answer", tools_used, check, allowed, trace.guardrails)
+        return self._finish(draft, "answer", tools_used, check, allowed)
 
     @staticmethod
     def _allowed_figures(evidence: set[float], request_text: str) -> set[float]:
@@ -263,16 +263,15 @@ class ChatPipeline:
 
     @staticmethod
     def _finish(text: str, kind: str, tools_used: list[str], check: InputCheck,
-                allowed: set[float], guardrails: bool = True) -> ChatReply:
+                allowed: set[float]) -> ChatReply:
         text = strip_unsupported_amounts(text, allowed)   # P1 figure grounding: always on
-        if guardrails:
-            text = enforce_output(
-                text,
-                approval_context=check.approval_question or "check_eligibility" in tools_used,
-                tax_context=check.mentions_tax,
-            )
-        else:
-            text = redact(text).text   # privacy redaction stays on even with guardrails off
+        # Regulatory rules (no approval promises, no tax advice) and redaction: always on, whatever the
+        # guardrails switch says.
+        text = enforce_output(
+            text,
+            approval_context=check.approval_question or "check_eligibility" in tools_used,
+            tax_context=check.mentions_tax,
+        )
         return ChatReply(text or NO_ANSWER_REPLY, kind, tools_used)
 
     async def _execute(self, conn: ToolConnection, catalog: ToolCatalog, call: types.FunctionCall,
@@ -306,8 +305,9 @@ class ChatPipeline:
             trace.record_mcp(name, args, "failed: MCP server unavailable", raw_args, str(exc))
             return _ToolOutcome({"error": "The Great.cards service failed for this request. Tell the user the "
                                           "data is temporarily unavailable; do not invent any card data."})
+        sent_chars = MAX_RESULT_CHARS if result.truncated else None
         if not result.ok:
-            trace.record_mcp(name, args, "error returned by tool", raw_args, result.text)
+            trace.record_mcp(name, args, "error returned by tool", raw_args, result.raw, sent_chars)
             return _ToolOutcome({"error": result.data}, called=True)
-        trace.record_mcp(name, args, "ok", raw_args, result.text)
+        trace.record_mcp(name, args, "ok", raw_args, result.raw, sent_chars)
         return _ToolOutcome({"result": result.data}, called=True, evidence_text=result.text)

@@ -19,6 +19,7 @@ from google.genai import types
 from app.chat.pipeline import ChatPipeline
 from app.chat.transcript import TurnTrace
 from app.safety.grounding import numbers_in, unsupported_amounts
+from app.tools.client import ToolResult
 from app.tools.registry import ToolCatalog, ToolSpec, grounding_problem
 
 MYNTRA = ("okay so I spend ₹10,000 on Myntra. Recommend a credit card and tell me exactly how much "
@@ -157,7 +158,7 @@ async def _execute_recommend(args: dict, request: str) -> tuple[str | None, bool
 
         async def call(self, name, arguments):
             FakeConnection.called = True
-            return SimpleNamespace(ok=True, data={}, text="{}")
+            return ToolResult(ok=True, data={}, text="{}", raw="{}")
 
     pipeline = ChatPipeline(sessions=None, llm=None, tools=None)  # type: ignore[arg-type]
     call = types.FunctionCall(name="recommend_cards", args=args)

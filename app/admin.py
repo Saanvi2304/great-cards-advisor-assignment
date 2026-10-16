@@ -374,7 +374,8 @@ async def admin_get_guardrails(request: Request) -> dict[str, Any]:
 
 @router.put("/admin/api/guardrails", dependencies=admin_only)
 async def admin_set_guardrails(payload: GuardrailsUpdate, request: Request) -> dict[str, Any]:
-    """Switch input/output guardrails on or off for new chat turns (in memory; resets on restart)."""
+    """Switch the input guardrails on or off for new chat turns (in memory; resets on restart).
+    The approval and tax output rules always run."""
     runtime = _runtime(request)
     runtime.set_guardrails(payload.enabled)
     return _settings_view(runtime)["guardrails"]

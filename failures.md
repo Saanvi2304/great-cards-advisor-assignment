@@ -8,6 +8,7 @@
 | Execution trace | `logs/app.log` (tool calls, schema rejections, grounding rewrite) |
 | Reference logs | `logs_failure_example/` (extracted logs from `\logs` for reference on failures of this model) |
 | Code | `app/` at commit `81d2bbe` |
+| MCP server audit | `data/audit/` holds raw, untruncated MCP responses captured on 16 Oct 2026 for the engineering handoff in [section 8](#8-engineering-handoff-mcp-server-defects) |
 
 > **Note:** `logs_failure_example/` contains extracted logs from `\logs` kept for the reviewer's reference on the failures of this model evaluated in this report. `logs_failure_example/` Does NOT have any impact on the application, its just for reference and exact bit by bit copy of actual logs recorded while testing.
 
@@ -20,6 +21,8 @@
 - **No tool results:** the transcript records each MCP call's *arguments and status*, not the data the tool returned. So "used the results correctly" can only be judged from internal consistency and from what the model said about the results.
 - **No error text:** schema-rejection messages are not logged.
 - **Cleaned arguments only:** logged arguments are the *post-cleaning* values. Parameters the app removed as not accepted (`registry.py:126`) do not appear.
+
+These limits apply to the 15 Oct transcript only. Transcripts now record raw arguments, error text and the **full, untruncated** tool response for every MCP call. The two server defects in section 8 were confirmed by calling the MCP server directly, not from the transcript.
 
 **Labels used below**
 - **Confirmed:** directly shown by the logs or code.
@@ -106,9 +109,10 @@ Questions marked Pass with no issues are kept short.
 **Q1: ₹15k/mo Amazon** (Partial)
 - **Intent:** best card net of cashback limits and fees.
 - **Tool:** `recommend_cards {"amazon_spends": 15000}` is the right tool with the right arguments.
-- **Answer:** lists two cards at ₹9,000/yr each. It never addresses the "cashback limits" the user explicitly asked about and doesn't explain the tie.
+- **Answer:** lists ICICI Amazon Pay (free) and HDFC Millennia (₹1,180 joining fee) at ₹9,000/yr each. It never addresses the "cashback limits" the user explicitly asked about and doesn't explain the tie.
+- **Root cause (reclassified, confirmed 16 Oct):** the tie comes from the server. `recommend_cards` leaves the joining fee out of `net_annual_savings`, so a card that costs ₹1,180 up front scores the same as a lifetime-free card. In a live re-run, the server ranks Millennia **#1**, above the free card. The model repeated the server's figures faithfully. See [Handoff B](#handoff-b-recommend_cards-net-savings-leave-out-the-joining-fee).
 - **Unverifiable:** why only 2 of the default 5 results were shown.
-- **Failure:** Model (incomplete answer).
+- **Failures:** **MCP tool (server math defect, primary)**; Model (did not address cashback limits).
 
 **Q2: Multi-category profile** (Partial)
 - **Tool:** `recommend_cards` is the right tool.
@@ -259,8 +263,8 @@ Questions marked Pass with no issues are kept short.
 | Class | Confirmed | Suspected / unverifiable |
 |---|---|---|
 | **Model** | Invented arguments (Q4, Q5); undisclosed assumptions (Q2, Q3, Q14); no tools for card facts (Q11, Q12); generic caps and exclusions instead of tool data (Q1, Q3, Q6, Q7, Q8); model-computed ₹ figures (Q5, Q11, Q14); overrode tool ranking (Q14); eligibility result not reported (Q13 follow-up); redundant calls (Q8, Q13) | Whether "Why it fits" claims match the tool data |
-| **MCP tool** | No forex or UPI spend dimension (Q5, Q8); `compare_cards` ignores spends (Q9) | Unknown alias returns success instead of `isError` (Q9) |
-| **Data** | Alias spelling quirk `hdfc-millenia-credit-card` (Q9) | ₹1 "lifetime free" fee (Q5); "Free" vs ₹235 fee (Q7); high savings estimates (Q2, Q14); pincode 101014 handling (Q13) |
+| **MCP tool** | `check_eligibility` lists cards whose own income floor is above the applicant's income (Handoff A); `recommend_cards` leaves the joining fee out of `net_annual_savings` (Q1, Handoff B); no forex or UPI spend dimension (Q5, Q8); `compare_cards` ignores spends (Q9) | Unknown alias returns success instead of `isError` (Q9) |
+| **Data** | Alias spelling quirk `hdfc-millenia-credit-card` (Q9); a card listed by `check_eligibility` is "not found" by `get_card_details` (`hsbc-cashback-credit-card`); the two income-floor fields disagree for several cards; `top_spend_categories.annual_value` holds a monthly figure (all in section 8) | ₹1 "lifetime free" fee (Q5); "Free" vs ₹235 fee (Q7); high savings estimates (Q2, Q14); pincode 101014 handling (Q13) |
 | **App logic** | Session-wide ₹ evidence pool and range bypass; spend grounding passes on any digit in history; card facts possible without tools; spend-aware `whatsapp_compare_cards` not exposed; fraud regex gaps; Luhn-only card detection; greeting regex too narrow; duplicate disclaimer; transcripts omit tool results and error text | Cause of the Q3 schema rejection |
 
 ---
@@ -287,9 +291,153 @@ Questions marked Pass with no issues are kept short.
    - Allow greetings like "how are you".
    - Deduplicate disclaimers.
    - Check pincode plausibility.
-9. **Raise with Great.cards (P3, MCP/Data).**
+9. **Raise with Great.cards (MCP/Data).** The two P1 defects are written up as a formal handoff in section 8:
+   - **P1:** apply each card's income floor in `check_eligibility` (Handoff A).
+   - **P1:** subtract the joining fee in `net_annual_savings` (Handoff B).
    - Add forex and UPI spend fields.
    - Canonicalise card aliases.
    - Return `isError` for unknown aliases.
    - Fix placeholder or contradictory fee values.
    - Review milestone-heavy savings estimates.
+
+---
+
+## 8. Engineering handoff: MCP server defects
+
+**For:** Great.cards MCP / backend engineering
+**Evidence captured:** 16 Oct 2026, live MCP server, read-only calls. Raw, untruncated responses are in `data/audit/`.
+**Status:** both defects are **confirmed** from the server's own responses. The root-cause notes are hypotheses, because we can't see the server code.
+
+| ID | Tool | Defect | Severity | User harm |
+|---|---|---|---|---|
+| A | `check_eligibility` | Lists cards whose own minimum income is above the applicant's income | **P1** | Users apply for cards they can't get, take a hard credit enquiry, and get rejected |
+| B | `recommend_cards` | `net_annual_savings` leaves out the joining fee, so fee cards tie with or outrank free cards | **P1** | Users pick a card that costs them more in year one than the alternative |
+
+### Handoff A: `check_eligibility` ignores each card's income floor
+
+**Contract.** The tool description says it returns "which cards a user can actually APPLY for based on pincode, income, and employment."
+
+**Reproduction**
+
+```json
+// request
+check_eligibility {"annual_income": "120000", "employment_status": "salaried", "pincode": "110001"}
+// response (abridged; full file: data/audit/check_eligibility_120000.json)
+{"eligible_cards_count": 201,
+ "profile": {"pincode": "110001", "annual_income": "₹1,20,000", "employment": "salaried"},
+ "eligible_cards": [ /* 15 cards: name, bank, fees, rating, invite_only, employment_type, new_to_credit, tags. No income field. */ ]}
+```
+
+Then, for each listed card, `get_card_details {"card_alias": ...}` returns an `eligibility` block, for example HDFC Millennia:
+
+```json
+"eligibility": {"min_age": 21, "max_age": 60, "income_salaried_lpa": 4, "income_self_emp_lpa": 6,
+                "min_income_monthly": 35000, "crif_salaried": 720, "crif_self_emp": 720}
+```
+
+Full per-card results: `data/audit/eligibility_income_floor_120000.json`.
+
+**Worked example: applicant earning ₹1,20,000 a year (₹10,000 a month), salaried**
+
+Every one of the 14 listed cards that has eligibility data requires more than ₹1,20,000, by **both** of the server's income fields. The 15th card has no details at all (see A-related issues).
+
+| Card listed as eligible | Floor (`income_salaried_lpa`) | Floor (`min_income_monthly` × 12) | Floor ÷ applicant income |
+|---|---|---|---|
+| IDFC FIRST Wealth | ₹36,00,000 | ₹12,00,000 | 30× |
+| Swiggy BLCK HDFC | ₹12,00,000 | ₹12,00,000 | 10× |
+| Tata Neu Infinity HDFC | ₹9,60,000 | ₹9,60,000 | 8× |
+| HSBC Travel One | ₹6,00,000 | ₹4,20,000 | 5× |
+| HDFC Millennia | ₹4,00,000 | ₹4,20,000 | 3.3× |
+| Standard Chartered Smart | ₹4,00,000 | ₹3,60,000 | 3.3× |
+| Flipkart SBI | ₹3,60,000 | ₹3,60,000 | 3× |
+| SBI Cashback | ₹3,00,000 | ₹3,60,000 | 2.5× |
+| Axis Flipkart | ₹3,00,000 | ₹3,00,000 | 2.5× |
+| SBI SimplyCLICK | ₹3,00,000 | ₹2,40,000 | 2.5× |
+| IDFC FIRST Millennia | ₹3,00,000 | ₹3,00,000 | 2.5× |
+| Axis MyZone | ₹3,00,000 | ₹3,00,000 | 2.5× |
+| IndianOil RBL XTRA | ₹3,00,000 | ₹1,80,000 | 2.5× |
+| Kiwi Klick | ₹2,00,000 | ₹1,92,000 | 1.7× |
+| HSBC Cashback | — (`get_card_details`: "Card not found") | — | — |
+
+Ratios use `income_salaried_lpa`. The lowest floor on the list (Kiwi Klick, ₹1,92,000 by the monthly field) is still 1.6× the applicant's income.
+
+**It isn't limited to low incomes.** At `annual_income: "800000"` (`data/audit/check_eligibility_800000.json`), the server returns 232 cards. The listed ones still include Swiggy BLCK HDFC (₹12,00,000 floor) and Tata Neu Infinity HDFC (₹9,60,000 floor).
+
+**Root cause (hypothesis).** The count changes with income (201 at ₹1.2L, 232 at ₹8L), so *some* income-dependent filter runs. It doesn't compare against the per-card floors that `get_card_details` exposes. The data needed for the fix is already in the backend (`eligibility.income_salaried_lpa`, `income_self_emp_lpa`). The eligibility query appears not to join on it, or joins on a different field.
+
+**Requested fix**
+1. Return only cards where `applicant annual_income ≥ card floor`. Use the floor for the applicant's employment type: `income_salaried_lpa` for salaried applicants and `income_self_emp_lpa` for self-employed ones.
+2. Add the floor applied to each `eligible_cards` entry (for example `"min_annual_income": 400000`). Clients can then explain the result without a `get_card_details` call per card.
+3. Return cards with no floor data separately (for example `"income_unverified": [...]`) instead of as eligible.
+4. Make one income field canonical (see A-related issues).
+
+**Acceptance tests** (all against the live tool)
+
+| # | Input | Expected |
+|---|---|---|
+| A1 | ₹1,20,000, salaried, 110001 | None of the 14 cards in the table above is returned |
+| A2 | ₹8,00,000, salaried | Swiggy BLCK and Tata Neu Infinity absent; HDFC Millennia (₹4L floor) present |
+| A3 | ₹4,00,000 and ₹3,99,999, salaried | HDFC Millennia present at ₹4,00,000 and absent at ₹3,99,999 (boundary is inclusive) |
+| A4 | ₹5,00,000, salaried vs self-employed | HDFC Millennia present for salaried (₹4L floor) and absent for self-employed (₹6L floor) |
+| A5 | Rising incomes | `eligible_cards_count` never decreases as income rises |
+| A6 | Any input | For every returned card, `get_card_details` resolves its alias and its floor is ≤ the applicant's income |
+
+**A-related data issues**
+- **Unresolvable alias:** `hsbc-cashback-credit-card` is returned by `check_eligibility` at both incomes, but `get_card_details` answers `"Card not found"`.
+- **Two income fields disagree** for 8 of the 14 cards. Examples: IDFC FIRST Wealth has `income_salaried_lpa` 36 (₹36L) but `min_income_monthly` 1,00,000 (₹12L a year); IndianOil RBL XTRA has ₹3L vs ₹1.8L. Clients can't tell which one the bank applies.
+
+**Chatbot-side status.** The bot can't apply floors itself, because the eligibility response carries no income field. Doing it per card would mean about 15 extra `get_card_details` calls per eligibility question, which we rejected for rate-limit and latency reasons. The approval disclaimer is appended to every eligibility answer in code, but the list itself remains the server's.
+
+### Handoff B: `recommend_cards` net savings leave out the joining fee
+
+**Contract.** The tool description says it ranks by "NET ANNUAL SAVINGS (rewards earned + lounge value + milestone benefits - joining fee - annual fee)". The response's own `_format_hint` says something different: `net_annual_savings = annual_rewards + milestone_benefits + lounge_value - annual_fee`. **The two formulas disagree, and the server follows the second.**
+
+**Reproduction** (this is Q1 from section 4)
+
+```json
+// request
+recommend_cards {"amazon_spends": 15000, "top_n": 5, "response_format": "full"}
+// response (abridged; full file: data/audit/recommend_cards_amazon_15000.json); total_cards_analyzed: 215
+{"rank": 1, "card_name": "HDFC MILLENIA", "net_annual_savings": "₹9,000", "annual_rewards_value": "₹9,000",
+ "milestone_benefits": "₹0", "lounge_value": "₹0", "joining_fee": "₹1,180 (incl. GST)",
+ "annual_fee": "Free (waived at ₹1,00,000/yr spend; ₹1,180 otherwise)", "annual_fee_waived": true}
+{"rank": 2, "card_name": "ICICI Amazon Pay Credit Card", "net_annual_savings": "₹9,000", "annual_rewards_value": "₹9,000",
+ "joining_fee": "Free", "annual_fee": "Free"}
+```
+
+**Worked example: ₹15,000 a month on Amazon (₹1,80,000 a year)**
+
+Amazon rewards come to ₹750 a month, or ₹9,000 a year. *Year 1* below assumes the usual Indian card billing: the joining fee is charged in year one and the annual fee from year two (or waived).
+
+| Server rank | Card | Server `net_annual_savings` | Joining fee | Year 1 net (rewards + milestones + lounge − joining fee) | Year 1 rank |
+|---|---|---|---|---|---|
+| 1 | HDFC Millennia | ₹9,000 | ₹1,180 | **₹7,820** | 4 |
+| 2 | ICICI Amazon Pay | ₹9,000 | Free | **₹9,000** | **1** |
+| 3 | Swiggy Ornge HDFC | ₹9,000 | ₹590 | **₹8,410** | 3 |
+| 4 | American Express MR | ₹8,892 (₹2,052 rewards + ₹6,840 milestones) | ₹1,180 | **₹7,712** | 5 |
+| 5 | BOB Cashback | ₹8,411 (₹9,000 − ₹589 annual fee) | ₹589 | **₹8,411** | 2 |
+
+The server subtracts the annual fee when it isn't waived (BOB: ₹9,000 − ₹589 = ₹8,411) but never the joining fee. As a result, the lifetime-free ICICI Amazon Pay card ranks **below** HDFC Millennia, which costs ₹1,180 up front. On a first-year basis, Millennia drops from #1 to #4.
+
+**Root cause (confirmed from the response).** The formula the server applies, as stated in `_format_hint`, has no joining-fee term. The tool description promises one.
+
+**Requested fix**
+1. Return two figures: `net_first_year_savings` (rewards + milestones + lounge − joining fee − any annual fee charged in year one) and `net_ongoing_annual_savings` (the same, minus the annual fee unless waived).
+2. Rank by `net_first_year_savings` by default, or state in the description which figure the ranking uses.
+3. Make the tool description and `_format_hint` state the same formula.
+4. When figures tie, rank the card with the lower total fees first.
+
+**Acceptance tests**
+
+| # | Input | Expected |
+|---|---|---|
+| B1 | `amazon_spends: 15000` | ICICI Amazon Pay first-year net ₹9,000; HDFC Millennia ₹7,820; ICICI ranks above Millennia |
+| B2 | Any input | For every result, first-year net = `annual_rewards_value` + `milestone_benefits` + `lounge_value` − joining fee (− year-one annual fee), to the rupee |
+| B3 | Any input | A free card never ranks below a fee card with equal or lower rewards |
+| B4 | Any input | The formula in the tool description matches `_format_hint` |
+| B5 | Spend above a card's monthly reward cap | The card's rewards don't exceed cap × 12 |
+
+**B-related data issues**
+- **`top_spend_categories.annual_value` is a monthly figure.** Every card shows Amazon `annual_value: "₹750"` while `annual_rewards_value` is ₹9,000 (₹750 × 12). American Express shows ₹171, against ₹2,052 = ₹171 × 12. Either rename the field or return the annual value.
+- **Welcome benefits aren't counted and aren't disclosed** (Millennia `cash_value` 1,000; American Express 1,560). This needs a product decision: counting them would partly offset the joining fee in year one. Whichever way it goes, the formula should say.
+- **Not verified, so not claimed:** whether monthly reward caps are applied. At ₹15,000 the Amazon reward (₹750 a month) is below the caps commonly published for these cards, so this request doesn't exercise them. B5 covers that.

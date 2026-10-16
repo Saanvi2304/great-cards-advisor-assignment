@@ -92,7 +92,7 @@ class AdvisorRuntime:
         if enabled:
             logger.info("Guardrails switched ON at runtime")
         else:
-            logger.warning("Guardrails switched OFF at runtime (redaction and grounding stay on)")
+            logger.warning("Guardrails switched OFF at runtime (approval/tax rules, redaction and grounding stay on)")
 
     def _install(self, settings: Settings) -> None:
         register_secrets(settings.secrets)   # before anything could log them
