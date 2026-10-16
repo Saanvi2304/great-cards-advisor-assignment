@@ -2,6 +2,10 @@
   "use strict";
 
   const { escapeHtml, renderMarkdown, timeFormat, parseDate, dayBucket, shortWhen, toast } = window.GCUI;
+  const titleFrom = window.GCUI.titleFrom || ((text) => {
+    const clean = (text || "").replace(/\s+/g, " ").trim();
+    return clean.length > 70 ? `${clean.slice(0, 67).trimEnd()}...` : clean || "New chat";
+  });
 
   // ---- Elements ----
   const $ = (id) => document.getElementById(id);
@@ -24,7 +28,7 @@
   const emptyTemplate = $("empty-template");
   const MAX_CHARS = Number(input.dataset.max) || 1000;
   const REQUEST_TIMEOUT_MS = 120000;
-  const STATUS_POLL_MS = 30000;   // matches the /health cache
+  const STATUS_RETRY_MS = [15000, 30000, 60000, 120000, 300000];   // backoff while a check is failing
   const STORAGE_KEY = "gc_active_chat";
   const isTouch = window.matchMedia("(hover: none)").matches;
 
@@ -566,16 +570,22 @@
     }
   }
 
+  // /health is checked once on load; it's only re-checked (with backoff) while something is failing.
   let statusBusy = false;
+  let statusRetry = null;
+  let statusAttempt = 0;
   async function refreshStatus() {
     if (statusBusy) return;
     statusBusy = true;
+    clearTimeout(statusRetry);
+    let failed = true;
     try {
       const response = await fetch("/health", { credentials: "same-origin" });
       if (!response.ok) throw new Error(String(response.status));
       const data = await response.json();
       applyStatus("llm", data.llm);
       applyStatus("mcp", data.mcp);
+      failed = [data.llm, data.mcp].some((s) => s.state !== "ready" && s.state !== "off");
     } catch {
       const down = { state: "offline", label: "Server unreachable", detail: "The app server didn't respond" };
       applyStatus("llm", down);
@@ -583,6 +593,13 @@
     } finally {
       statusBusy = false;
     }
+    if (!failed) { statusAttempt = 0; return; }
+    const delay = STATUS_RETRY_MS[Math.min(statusAttempt++, STATUS_RETRY_MS.length - 1)];
+    statusRetry = setTimeout(retryStatus, delay);
+  }
+  function retryStatus() {
+    if (!document.hidden) refreshStatus();
+    else document.addEventListener("visibilitychange", retryStatus, { once: true });
   }
 
   // ---- Drawer (tablet & mobile) ----
@@ -647,9 +664,6 @@
       startNewChat();
     }
   });
-
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshStatus(); });
-  setInterval(() => { if (!document.hidden) refreshStatus(); }, STATUS_POLL_MS);
 
   // ---- Start ----
   if (window.matchMedia("(max-width: 600px)").matches) input.placeholder = "Ask about credit cards…";

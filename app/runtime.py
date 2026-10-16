@@ -48,6 +48,7 @@ class AdvisorRuntime:
         self._generation = 0          # bumped on every settings change, so stale health results are dropped
         self._health: dict[str, Any] | None = None
         self._health_at = 0.0
+        self._health_llm_error = ""   # llm.last_error when the cached result was taken
         self._health_lock = asyncio.Lock()
 
     # ---- Settings ----
@@ -138,16 +139,23 @@ class AdvisorRuntime:
     async def health(self, force: bool = False) -> dict[str, Any]:
         """Cached lightweight checks of Gemini and MCP (see GeminiClient.ping and McpToolGateway.ping)."""
         max_age = MIN_FORCED_CHECK_SECONDS if force else HEALTH_CACHE_SECONDS
-        if self._health and time.monotonic() - self._health_at < max_age:
+        if self._health_fresh(max_age):
             return self._health
         async with self._health_lock:
-            if self._health and time.monotonic() - self._health_at < max_age:
+            if self._health_fresh(max_age):
                 return self._health
             generation = self._generation
+            llm_error = self.llm.last_error if self.llm else ""
             result = await self._check(self.llm, self.tools, self.settings)
             if generation == self._generation:
-                self._health, self._health_at = result, time.monotonic()
+                self._health, self._health_at, self._health_llm_error = result, time.monotonic(), llm_error
             return result
+
+    def _health_fresh(self, max_age: float) -> bool:
+        """The cached result is usable unless it's too old or a chat turn has since failed (or recovered)."""
+        llm_error = self.llm.last_error if self.llm else ""
+        return (self._health is not None and time.monotonic() - self._health_at < max_age
+                and llm_error == self._health_llm_error)
 
     async def test_connection(self, **values: str) -> dict[str, Any]:
         """Check candidate settings with throwaway clients, without applying them."""

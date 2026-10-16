@@ -3,7 +3,7 @@
 
   const { escapeHtml, renderMarkdown, parseDate, shortWhen, timeFormat, toast } = window.GCUI;
   const $ = (id) => document.getElementById(id);
-  const HEALTH_POLL_MS = 30000;
+  const HEALTH_RETRY_MS = [15000, 30000, 60000, 120000, 300000];   // backoff while a check is failing
   const LOG_POLL_MS = 5000;
 
   const SECTIONS = {
@@ -210,16 +210,30 @@
     setGuardBadge(health.guardrails_enabled);
   }
 
+  // /health is checked once on load and when asked; it's only re-checked (with backoff) while something is failing.
+  let healthRetry = null;
+  let healthAttempt = 0;
   async function refreshHealth(force = false) {
+    clearTimeout(healthRetry);
     if (force) ["llm", "mcp"].forEach((k) => $(`hc-${k}`).classList.add("checking"));
+    let failed = true;
     try {
       const response = await fetch(`/health${force ? "?refresh=true" : ""}`, { credentials: "same-origin" });
       if (!response.ok) throw new Error();
-      applyHealth(await response.json());
+      const health = await response.json();
+      applyHealth(health);
+      failed = [health.llm, health.mcp].some((s) => s.state !== "ready" && s.state !== "off");
     } catch {
       const down = { state: "offline", label: "Server unreachable", detail: "The app server didn't respond", latency_ms: null, checked_at: "" };
       applyHealth({ status: "down", llm: down, mcp: down, checked_at: new Date().toISOString() });
     }
+    if (!failed) { healthAttempt = 0; return; }
+    const delay = HEALTH_RETRY_MS[Math.min(healthAttempt++, HEALTH_RETRY_MS.length - 1)];
+    healthRetry = setTimeout(retryHealth, delay);
+  }
+  function retryHealth() {
+    if (!document.hidden) refreshHealth();
+    else document.addEventListener("visibilitychange", retryHealth, { once: true });
   }
 
   $("run-health").addEventListener("click", (event) =>
@@ -769,15 +783,10 @@
     boot(session.local);
   }
 
-  let booted = false;
   function boot(local) {
     $("logout").hidden = local;
     show(current || location.hash.slice(1) || "overview", { force: true });
     refreshHealth();
-    if (booted) return;
-    booted = true;
-    setInterval(() => { if (!document.hidden) refreshHealth(); }, HEALTH_POLL_MS);
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshHealth(); });
   }
   start();
 })();

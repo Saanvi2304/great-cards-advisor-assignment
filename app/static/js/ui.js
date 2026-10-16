@@ -187,6 +187,6 @@
   });
 
   window.GCUI = {
-    escapeHtml, inline, renderMarkdown, timeFormat, dateFormat, parseDate, dayBucket, shortWhen, toast, ripple,
+    escapeHtml, inline, renderMarkdown, timeFormat, dateFormat, parseDate, dayBucket, shortWhen, titleFrom, toast, ripple,
   };
 })();
