@@ -37,6 +37,7 @@ class TurnTrace:
     llm_calls: int = 0
     mcp_calls: list[dict[str, Any]] = field(default_factory=list)
     blocked_reason: str = ""
+    guardrails: bool = True
 
     def record_mcp(self, tool: str, arguments: dict[str, Any], status: str,
                    raw_arguments: dict[str, Any] | None = None, detail: str = "") -> None:
@@ -65,6 +66,10 @@ class TranscriptLogger:
 
     def ensure_directory(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
+
+    def set_model(self, llm_model: str) -> None:
+        """Model name written in the header of transcripts started from now on."""
+        self._llm_model = llm_model
 
     def _open_file(self, conversation: Conversation, session_id: str) -> Path:
         """Create the session's log file on its first turn."""
@@ -111,6 +116,8 @@ class TranscriptLogger:
         ]
         if trace.redacted:
             lines.append(f"Redacted before processing: {', '.join(trace.redacted)}")
+        if not trace.guardrails:
+            lines.append("Guardrails: OFF (input and output guardrails skipped; redaction and grounding still on)")
         if trace.blocked_reason:
             lines.append(f"Guardrail: blocked locally ({trace.blocked_reason})")
         if trace.llm_calls:
@@ -166,6 +173,38 @@ class TranscriptLogger:
             logger.warning("Could not list session transcripts")
             return []
 
+    # ---- Admin console: every browser's transcripts ----
+
+    def _all_files(self) -> list[Path]:
+        if not self._dir.is_dir():
+            return []
+        return sorted(self._dir.glob("session_*.log"), key=lambda path: path.stat().st_mtime, reverse=True)
+
+    async def list_all(self, limit: int) -> list[LoggedChat]:
+        def collect() -> list[LoggedChat]:
+            return [chat for path in self._all_files()[:limit] if (chat := parse_transcript(path))]
+
+        try:
+            return await asyncio.to_thread(collect)
+        except OSError:
+            logger.warning("Could not list session transcripts")
+            return []
+
+    async def load_file(self, name: str) -> tuple[LoggedChat, str] | None:
+        """A transcript by file name, matched against the directory listing (never a path built from input)."""
+        def find() -> tuple[LoggedChat, str] | None:
+            for path in self._all_files():
+                if path.stem == name:
+                    chat = parse_transcript(path)
+                    return (chat, path.read_text(encoding="utf-8", errors="replace")) if chat else None
+            return None
+
+        try:
+            return await asyncio.to_thread(find)
+        except OSError:
+            logger.warning("Could not read a session transcript")
+            return None
+
     async def load_chat(self, session_id: str, chat_id: str) -> LoggedChat | None:
         """The transcript of one of this browser's chats, matched by chat id (or file name for older logs)."""
         def find() -> LoggedChat | None:
@@ -190,6 +229,9 @@ class LoggedTurn:
     tools: list[str] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
     blocked_reason: str = ""
+    duration_ms: int = 0
+    guardrails_off: bool = False
+    mcp_calls: list[dict[str, str]] = field(default_factory=list)   # every call: tool + status
 
 
 @dataclass
@@ -199,6 +241,8 @@ class LoggedChat:
     started: str
     updated: str
     turns: list[LoggedTurn]
+    tag: str = ""
+    model: str = ""
 
     @property
     def title(self) -> str:
@@ -207,7 +251,7 @@ class LoggedChat:
         return first if len(first) <= 70 else first[:67].rstrip() + "..."
 
 
-_TURN_RE = re.compile(r"^---- Turn \d+ \| (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \| .* ----$")
+_TURN_RE = re.compile(r"^---- Turn \d+ \| (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \| .*?(?:\| (\d+) ms )?----$")
 _EVENT_RE = re.compile(r"^---- \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| .* ----$")
 _ASSISTANT_RE = re.compile(r"^ASSISTANT \[(\w+)\]:$")
 _MCP_CALL_RE = re.compile(r"^    - (\S+) .* -> (.+)$")
@@ -271,7 +315,7 @@ def parse_transcript(path: Path) -> LoggedChat | None:
             flush()
             block = ""
         if match := _TURN_RE.match(line):
-            turn = LoggedTurn(time=_iso(match.group(1), "%Y-%m-%d %H:%M:%S"))
+            turn = LoggedTurn(time=_iso(match.group(1), "%Y-%m-%d %H:%M:%S"), duration_ms=int(match.group(2) or 0))
             turns.append(turn)
         elif _EVENT_RE.match(line):
             turn = None
@@ -285,12 +329,16 @@ def parse_transcript(path: Path) -> LoggedChat | None:
             turn.notices.append(line[len("Notice: "):])
         elif match := _GUARDRAIL_RE.match(line):
             turn.blocked_reason = match.group(1)
-        elif (match := _MCP_CALL_RE.match(line)) and match.group(2) in _CALLED_STATUSES:
-            turn.tools.append(match.group(1))
+        elif line.startswith("Guardrails: OFF"):
+            turn.guardrails_off = True
+        elif match := _MCP_CALL_RE.match(line):
+            turn.mcp_calls.append({"tool": match.group(1), "status": match.group(2)})
+            if match.group(2) in _CALLED_STATUSES:
+                turn.tools.append(match.group(1))
     if block:
         flush()
     return LoggedChat(
         id=_chat_id(path, header), path=path,
         started=_iso(header.get("started", ""), "%Y-%m-%d %H:%M:%S %z") or (turns[0].time if turns else ""),
-        updated=updated, turns=turns,
+        updated=updated, turns=turns, tag=header.get("session", ""), model=header.get("model", ""),
     )

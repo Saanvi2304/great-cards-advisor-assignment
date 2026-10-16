@@ -461,3 +461,116 @@ The chatbot is now a two-panel dashboard. The left sidebar has New chat, live Ge
 - **No message was sent to Gemini during testing.** A real recommendation turn through the new UI is still untested.
 - **A resumed chat doesn't keep the earlier tool results.** This is the same as before: only redacted history is replayed.
 - **Retrying a failed request** removes the failed exchange from the screen, but the server may already have logged it. The logged turn reappears when the chat is reloaded.
+
+---
+
+## 10. User
+
+I needed a health check system which checks the connection with llm and mcp server. The application already has a /status endpoint, so don't create a duplicate health endpoint. Rename it to /health and update all references in the code and UI. It should show separate LLM and MCP connection statuses using lightweight health checks. Then implement the /admin dashboard with a design matching the existing frontend. Add sidebar navigation for Overview, Chat History & Logs, Model & API Settings, Guardrails, and All Endpoints. Let me view all saved chats and logs, change the LLM model, API key, and MCP server URL at runtime without modifying .env, and retain runtime settings across page reloads while resetting to .env defaults after a backend restart. Keep API keys masked and secure, never expose them to the browser or logs, and avoid storing secrets in local storage. Add a functional guardrails ON/OFF toggle, enabled by default through .env, that actually controls backend guardrail behavior without accidentally weakening existing P1 protections when enabled. Automatically discover and display all website and API routes, including their paths, HTTP methods, and purposes. Make the dashboard interactive, responsive, and consistent with the existing UI. Inspect the current architecture first, reuse existing code wherever possible, and don't break chat, Gemini, MCP, validation, or logging functionality. Implement the changes and report the files modified and how to verify everything. Now do this and append the prompt and the answer to inline_text.md
+
+## 10. Assistant: work performed
+
+- **Inspected:** `main.py` (the status endpoint was `/api/status`, and a separate liveness-only `/health` already existed), `pipeline.py`, `guardrails.py`, `transcript.py`, `gemini.py`, `client.py`, `logging_config.py`, `config.py`, `.env.example`, and the chat UI. The UI now also has a theme toggle.
+- **One `/health` endpoint:**
+  - `/api/status` and the old `/health` were merged into a single `GET /health`. It keeps the old `status` and `configured` fields, and adds separate `llm` and `mcp` objects (state, label, detail, latency, time checked) plus `guardrails_enabled`.
+  - **Lightweight checks:**
+    - **Gemini:** `models.get` for the configured model. It proves reachability, key and model without generating anything or using generation quota.
+    - **MCP:** MCP `initialize` plus `ping`, with no tool call.
+    - Both run in parallel with a 10 s timeout. Results are cached for 30 s, and `?refresh=true` re-checks at most every 5 s.
+  - The chat UI now polls `/health` every 30 s. The old poll-driven MCP retry helpers were removed.
+- **Runtime settings (`app/runtime.py`, new):**
+  - `AdvisorRuntime` builds the Gemini client and MCP gateway from a copy of the `.env` settings, then swaps them into the pipeline (`ChatPipeline.configure`).
+  - Each turn captures one client pair, so a turn already running finishes on the old clients; the old Gemini client is closed later.
+  - Overrides live in memory only: they survive page reloads, are never written to `.env`, and reset on restart.
+  - New secrets are registered with the log redaction filter (`logging_config.register_secrets`) before use.
+  - `test_connection` checks candidate values with throwaway clients without applying them.
+- **Guardrails switch:**
+  - `GUARDRAILS_ENABLED` (default true) is read from `.env` and can be toggled at runtime.
+  - When ON, behaviour is unchanged.
+  - When OFF, a turn skips `check_input` and `enforce_output`. These always stay on:
+    - sensitive-data redaction of input, output and logs (when guardrails are off, output is still passed through `redact`);
+    - schema validation;
+    - P1 spend, pincode and income grounding;
+    - ₹ figure verification (`strip_unsupported_amounts`);
+    - the rule that card facts need a tool result.
+  - Each turn records the switch state, and the transcript gets a `Guardrails: OFF` line.
+- **Admin (`app/admin.py`, new):**
+  - **Routes:** the `/admin` page plus `/admin/api/*` (session, login, logout, overview, chats, single chat, app log, settings get/put/test/reset, guardrails get/put, endpoints).
+  - **Access:**
+    - Loopback only by default; an optional `ADMIN_TOKEN` is exchanged for an HttpOnly `SameSite=Strict` cookie that is invalid after a restart.
+    - Changes must be same-origin JSON (Origin and `Sec-Fetch-Site` checks).
+    - Validation errors on admin routes list field names only.
+  - **Masking:** the API key is shown as `••••••••` plus its last 4 characters, and the MCP URL as scheme and host only.
+  - **Route discovery:** walks the live router, including FastAPI 0.143's wrapped included routers. Each route's purpose comes from its docstring, and its access level from the `require_admin` dependency. Docstrings were added to every route.
+- **Transcripts:** `list_all` and `load_file` match file names against the directory listing, never building a path from input. The parser now also reads response time, every MCP call with its status, the guardrails-off marker, the session tag and the model.
+- **Frontend:**
+  - `ui.js` (new) is shared by both pages: theme, markdown, date formatting, toasts and ripple were moved out of `chat.js` unchanged.
+  - `admin.html`, `admin.css` and `admin.js` (new) reuse the chat page's tokens, sidebar, status dots, buttons, bubbles and drawer.
+  - **Sections:**
+    - **Overview:** health cards with latency and a re-check button, stat tiles, configuration, reply-type and tool bars, recent chats.
+    - **Chat history & logs:** search, filters, conversation and raw views, download, and an app-log tail with level filter and auto-refresh.
+    - **Settings:** write-only key field, test / apply / reset, and "From .env" / "Runtime override" badges.
+    - **Guardrails:** switch with confirmation, controlled vs always-on lists, blocked counts.
+    - **Endpoints:** search, type filters, method badges, "Try" for simple GETs, "Open" for pages.
+  - The section is kept in the URL hash, so a reload stays on it. Nothing secret goes into browser storage.
+- **Docs:** `.env.example` (`GUARDRAILS_ENABLED`, `ADMIN_TOKEN`) and the README: endpoints, health checks, the admin console, and file responsibilities.
+- **Checks run:**
+  - The 16 existing unit tests pass. The previous multi-chat API test still passes.
+  - **Offline admin test, 31/31 pass.** It uses a fake key and an unreachable MCP address; the only external call is Gemini rejecting the fake key. It covers:
+    - the `/health` shape, and that `/api/status` is gone;
+    - masking, and that validation errors don't echo values;
+    - cross-origin and form posts blocked;
+    - applying, keeping and resetting runtime settings, with `.env` defaults untouched;
+    - a runtime key masked in the log viewer and never written to `app.log`;
+    - guardrails ON blocks off-topic messages, OFF doesn't, and redaction and ₹ grounding still work when OFF;
+    - transcript list, detail, guardrails-off markers, and rejected path traversal;
+    - discovery of all 23 routes;
+    - remote access: 401 without a token, wrong token rejected, token sign-in works.
+  - **Live server with the real `.env`:** `/health` reported Gemini connected (~630 ms) and MCP online (8 tools). Testing a nonexistent model reported "Model not found" without applying it. The real key appears nowhere in `logs/app.log`.
+  - **Headless Edge, desktop and 390 px phone, light and dark:**
+    - all five sections render;
+    - the guardrails confirm, off and on cycle reached the server;
+    - the section survives a reload, and the drawer works;
+    - no horizontal overflow and no JS errors;
+    - the chat page shows statuses from `/health`.
+  - Screenshots found five CSS bugs, all fixed:
+    - transcript titles collapsed to zero height;
+    - the bar fills were invisible;
+    - the health-card dots stayed grey;
+    - "Sign out" ignored `hidden`;
+    - a button wrapped on phones.
+
+## 10. Assistant: reply
+
+**Health:** `/api/status` and the old `/health` are now one `GET /health` with separate Gemini and MCP statuses. Gemini is checked with a model-metadata call and MCP with initialize plus ping. Results are cached for 30 s. The chat page uses `/health`, and the old fields are kept for compatibility.
+
+**Admin console (`/admin`):** five sections with the same design as the chat page:
+- Overview
+- Chat history & logs: every transcript from every browser, plus `app.log`
+- Model & API settings: test, apply and reset at runtime, kept in memory only and reset on restart
+- Guardrails: an ON/OFF switch controlling `check_input` and `enforce_output`; redaction, validation and P1 grounding always run
+- All endpoints: discovered from the live router
+
+Keys are write-only and masked, never sent back to the browser, and filtered from logs. Admin access is limited to this machine unless `ADMIN_TOKEN` is set.
+
+**Files:**
+- New: `app/runtime.py`, `app/admin.py`, `app/templates/admin.html`, `app/static/css/admin.css`, `app/static/js/admin.js`, `app/static/js/ui.js`.
+- Modified: `app/main.py`, `app/config.py`, `app/schemas.py`, `app/logging_config.py`, `app/llm/gemini.py`, `app/tools/client.py`, `app/chat/pipeline.py`, `app/chat/transcript.py`, `app/chat/session.py`, `app/static/js/chat.js`, `app/templates/index.html`, `.env.example`, `README.md`.
+
+**How to verify:**
+1. `venv\Scripts\python -m unittest discover -s tests` should pass, then start with `uvicorn app.main:app --reload`.
+2. `curl http://127.0.0.1:8000/health` should show `llm` and `mcp` as `ready`. `curl -o NUL -w "%{http_code}" http://127.0.0.1:8000/api/status` should return 404.
+3. Open http://127.0.0.1:8000/. The sidebar shows "Connected" / "Online". Ask a question to confirm chat still works.
+4. Open http://127.0.0.1:8000/admin and click "Run health check" on Overview.
+5. In **Chat history & logs**, open a transcript and switch between Conversation and Raw log; the Application log tab shows `app.log`.
+6. In **Model & API settings**, test a fake model name: it reports "Model not found" and nothing is applied. Save a different valid model: the badge changes to "Runtime override", it survives a page reload, and "Reset to .env defaults" or a server restart brings back the `.env` value. View the page source: no key appears.
+7. In **Guardrails**, turn it off (confirm), then ask "tell me a joke" in the chat: it isn't blocked locally, and the admin transcript shows "guardrails off". Turn it back on: the same message gets the local redirect.
+8. **All endpoints** lists 23 routes; "Try" next to `/health` shows its JSON.
+
+**Limitations**
+- **Changes made in the admin console are lost when the server restarts.** This is by design; edit `.env` for permanent changes.
+- **A health check calls Gemini and MCP at most every 30 s** (every 5 s with `?refresh=true`). Gemini's metadata call doesn't use generation quota but is still an API request.
+- **Behind a reverse proxy**, every request looks local. Set `ADMIN_TOKEN` and restrict `/admin` at the proxy.
+- **The admin console shows the last 4 characters of the key**, so you can tell which key is in use.
+- **With guardrails off,** Gemini's system prompt still contains its own safety rules. The switch controls the code guardrails only.
+- **`/openapi.json` (FastAPI's default) lists the admin routes.** It shows that they exist, not their data.

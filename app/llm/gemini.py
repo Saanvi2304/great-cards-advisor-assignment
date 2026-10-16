@@ -137,6 +137,24 @@ class GeminiClient:
     def model(self) -> str:
         return self._model
 
+    async def ping(self, timeout: float) -> None:
+        """Lightweight health check: fetch the model's metadata. Proves the API is reachable, the key is
+        accepted and the model exists, without generating content or using generation quota."""
+        try:
+            await asyncio.wait_for(self._client.aio.models.get(model=self._model), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise LLMError("Gemini didn't respond in time.") from exc
+        except errors.APIError as exc:
+            if exc.code == 404:
+                raise LLMError(f"Model '{self._model}' was not found.") from exc
+            if exc.code == 429:
+                raise LLMError("Reachable, but rate-limited right now.") from exc
+            if exc.code in (400, 401, 403):
+                raise LLMError("The Gemini API key was rejected.") from exc
+            raise LLMError(f"Gemini API error ({exc.code}).") from exc
+        except Exception as exc:
+            raise LLMError(f"Gemini is unreachable ({type(exc).__name__}).") from exc
+
     async def _call(self, contents: list[types.Content],
                     config: types.GenerateContentConfig) -> types.GenerateContentResponse:
         try:

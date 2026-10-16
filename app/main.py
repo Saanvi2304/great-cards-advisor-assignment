@@ -2,37 +2,33 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import secrets
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Path, Request, Response
+from fastapi import FastAPI, HTTPException, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.admin import router as admin_router
 from app.chat.pipeline import ChatPipeline
 from app.chat.session import SessionStore
 from app.chat.transcript import TranscriptLogger
 from app.config import (
     APP_DIR, APP_LOG_FILE, COOKIE_MAX_AGE_SECONDS, HISTORY_MESSAGES, LOG_DIR, MAX_LISTED_CHATS, SESSION_LOG_DIR,
-    MAX_MESSAGE_CHARS, MAX_SESSIONS, MCP_TIMEOUT_SECONDS, SESSION_TTL_SECONDS, get_settings,
+    MAX_MESSAGE_CHARS, MAX_SESSIONS, SESSION_TTL_SECONDS, get_settings,
 )
-from app.llm.gemini import GeminiClient
 from app.logging_config import configure_logging
-from app.schemas import (
-    CHAT_ID_PATTERN, ChatHistory, ChatMessage, ChatRequest, ChatResponse, ChatSummary, ServiceStatus, StatusResponse,
-)
-from app.tools.client import McpToolGateway
+from app.runtime import AdvisorRuntime
+from app.schemas import CHAT_ID_PATTERN, ChatHistory, ChatMessage, ChatRequest, ChatResponse, ChatSummary, HealthResponse
 
 logger = logging.getLogger(__name__)
 
 SESSION_COOKIE = "gc_session"
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
-MCP_RETRY_SECONDS = 30   # how often a status poll may retry an unreachable MCP server
 _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -51,39 +47,25 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.secrets, APP_LOG_FILE)
     transcripts = TranscriptLogger(SESSION_LOG_DIR, settings.llm_model)
     transcripts.ensure_directory()
-    llm: GeminiClient | None = None
-    tools: McpToolGateway | None = None
-    warm_up: asyncio.Task | None = None
-
-    problems = settings.problems()
-    if problems:
-        logger.warning("Advisor not configured; check .env for: %s", ", ".join(problems))
-    else:
-        llm = GeminiClient(settings.gemini_api_key, settings.llm_model, settings.llm_timeout_seconds)
-        tools = McpToolGateway(settings.mcp_url, MCP_TIMEOUT_SECONDS)
-        warm_up = asyncio.create_task(tools.warm_up())  # load live tool schemas without blocking startup
-
     sessions = SessionStore(SESSION_TTL_SECONDS, MAX_SESSIONS, HISTORY_MESSAGES)
-    app.state.pipeline = ChatPipeline(sessions, llm, tools, transcripts)
+    pipeline = ChatPipeline(sessions, None, None, transcripts)
+    # Builds the Gemini client and MCP gateway from .env (and later from /admin overrides).
+    runtime = AdvisorRuntime(settings, pipeline, transcripts)
+    runtime.start()
+
+    app.state.pipeline = pipeline
+    app.state.sessions = sessions
     app.state.transcripts = transcripts
-    app.state.llm = llm
-    app.state.tools = tools
-    app.state.retry_task = None
-    app.state.configured = not problems
+    app.state.runtime = runtime
     try:
         yield
     finally:
-        for task in (warm_up, app.state.retry_task):
-            if task and not task.done():
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
-        if llm:
-            await llm.aclose()
+        await runtime.aclose()
 
 
 app = FastAPI(title="Great.cards Credit Card Advisor", lifespan=lifespan, docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
+app.include_router(admin_router)
 templates = Jinja2Templates(directory=APP_DIR / "templates")
 
 
@@ -108,6 +90,10 @@ def _session_id(request: Request, response: Response) -> str:
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    if request.url.path.startswith("/admin/api"):
+        # Field names and messages only: the submitted values (e.g. an API key) are never echoed back.
+        problems = [f"{error['loc'][-1]}: {error['msg']}" for error in exc.errors() if error.get("loc")]
+        return JSONResponse(status_code=422, content={"detail": "; ".join(problems) or "Invalid request."})
     if any("chat_id" in error.get("loc", ()) for error in exc.errors()):
         return JSONResponse(status_code=422, content={"detail": "This chat couldn't be identified. Please start a new chat."})
     return JSONResponse(
@@ -118,9 +104,10 @@ async def validation_error(request: Request, exc: RequestValidationError) -> JSO
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> Response:
+    """Chat dashboard: sidebar with chats, service status and examples, and the chat panel."""
     response = templates.TemplateResponse(
         request, "index.html",
-        {"max_chars": MAX_MESSAGE_CHARS, "configured": request.app.state.configured},
+        {"max_chars": MAX_MESSAGE_CHARS, "configured": request.app.state.runtime.configured},
     )
     _session_id(request, response)
     return response
@@ -128,6 +115,7 @@ async def index(request: Request) -> Response:
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(payload: ChatRequest, request: Request, response: Response) -> ChatResponse:
+    """Send one chat message through the advisor pipeline and get the reply."""
     session_id = _session_id(request, response)
     pipeline: ChatPipeline = request.app.state.pipeline
     try:
@@ -141,6 +129,7 @@ async def chat(payload: ChatRequest, request: Request, response: Response) -> Ch
 
 @app.post("/api/reset", status_code=204)
 async def reset(request: Request) -> Response:
+    """Clear the cookie's single conversation and close its session log (API clients without chat ids)."""
     response = Response(status_code=204)
     pipeline: ChatPipeline = request.app.state.pipeline
     await pipeline.reset(_session_id(request, response), f"{request.method} {request.url.path}")
@@ -158,6 +147,7 @@ async def conversations(request: Request, response: Response) -> list[ChatSummar
 @app.get("/api/conversations/{chat_id}", response_model=ChatHistory)
 async def conversation(request: Request, response: Response,
                        chat_id: str = Path(pattern=CHAT_ID_PATTERN)) -> ChatHistory:
+    """Full message history of one of this browser's chats, rebuilt from its session log."""
     chat = await request.app.state.transcripts.load_chat(_session_id(request, response), chat_id)
     if chat is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
@@ -169,32 +159,8 @@ async def conversation(request: Request, response: Response,
     return ChatHistory(id=chat.id, title=chat.title, started=chat.started, messages=messages)
 
 
-@app.get("/api/status", response_model=StatusResponse)
-async def status(request: Request) -> StatusResponse:
-    """Gemini and MCP health from the outcome of real calls; no extra Gemini requests are made."""
-    state = request.app.state
-    llm: GeminiClient | None = state.llm
-    tools: McpToolGateway | None = state.tools
-    if llm is None:
-        llm_status = ServiceStatus(state="off", label="Not configured", detail="Set the Gemini values in .env")
-    elif llm.last_error:
-        llm_status = ServiceStatus(state="degraded", label="Last call failed", detail=llm.last_error)
-    else:
-        llm_status = ServiceStatus(state="ready", label="Ready", detail=llm.model)
-
-    if tools is None:
-        mcp_status = ServiceStatus(state="off", label="Not configured", detail="Set MCP_URL in .env")
-    elif tools.loading or tools.reachable is None:
-        mcp_status = ServiceStatus(state="connecting", label="Connecting", detail="Loading Great.cards tools")
-    elif tools.reachable:
-        mcp_status = ServiceStatus(state="ready", label="Online", detail=f"{tools.tool_count} tools available")
-    else:
-        mcp_status = ServiceStatus(state="offline", label="Unreachable", detail="Retrying automatically")
-        if tools.retry_due(MCP_RETRY_SECONDS):
-            state.retry_task = asyncio.create_task(tools.recheck())
-    return StatusResponse(llm=llm_status, mcp=mcp_status)
-
-
-@app.get("/health")
-async def health(request: Request) -> dict[str, object]:
-    return {"status": "ok", "configured": request.app.state.configured}
+@app.get("/health", response_model=HealthResponse)
+async def health(request: Request, refresh: bool = Query(False)) -> HealthResponse:
+    """Gemini and MCP connection health from lightweight checks (model metadata lookup, MCP ping),
+    cached for 30 seconds; `?refresh=true` checks again (at most every 5 seconds)."""
+    return HealthResponse(**await request.app.state.runtime.health(force=refresh))

@@ -17,6 +17,12 @@ class RedactingFilter(logging.Filter):
         super().__init__()
         self._secrets = [secret for secret in secrets if len(secret) >= 6]
 
+    def add_secrets(self, secrets: list[str]) -> None:
+        self._secrets.extend(s for s in secrets if len(s) >= 6 and s not in self._secrets)
+
+    def clean(self, text: str) -> str:
+        return self._clean(text)
+
     def _clean(self, text: str) -> str:
         for secret in self._secrets:
             text = text.replace(secret, "[secret]")
@@ -46,7 +52,22 @@ class RedactingFilter(logging.Filter):
         return True
 
 
+_FILTER: RedactingFilter | None = None
+
+
+def register_secrets(secrets: list[str]) -> None:
+    """Mask values set at runtime (e.g. a new API key from /admin) in every later log record."""
+    if _FILTER is not None:
+        _FILTER.add_secrets(secrets)
+
+
+def scrub(text: str) -> str:
+    """Apply the log filter to text shown outside the log files (the admin log viewer)."""
+    return _FILTER.clean(text) if _FILTER is not None else redact(text).text
+
+
 def configure_logging(secrets: list[str], log_file: Path) -> None:
+    global _FILTER
     log_format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
     logging.basicConfig(level=logging.INFO, format=log_format)
     root = logging.getLogger()
@@ -55,7 +76,11 @@ def configure_logging(secrets: list[str], log_file: Path) -> None:
         file_handler.setFormatter(logging.Formatter(log_format))
         root.addHandler(file_handler)
 
-    redacting_filter = RedactingFilter(secrets)
+    if _FILTER is None:
+        _FILTER = RedactingFilter(secrets)
+    else:
+        _FILTER.add_secrets(secrets)
+    redacting_filter = _FILTER
     handlers = list(root.handlers)
     for name in _SERVER_LOGGERS:
         handlers.extend(logging.getLogger(name).handlers)

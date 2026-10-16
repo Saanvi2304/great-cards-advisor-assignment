@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex">
+  <title>Admin · Great.cards Credit Card Advisor</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v=5">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}?v=3">
+</head>
+<body class="admin">
+  <div class="shell" id="shell">
+    <!-- ===== Sidebar ===== -->
+    <aside class="sidebar" id="sidebar" aria-label="Admin navigation">
+      <div class="sidebar-head">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">G</span>
+          <div class="brand-text">
+            <span class="brand-name">Admin console</span>
+            <span class="brand-sub">Card Advisor</span>
+          </div>
+        </div>
+        <button type="button" class="icon-button sidebar-close" id="sidebar-close" aria-label="Close sidebar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <nav class="admin-nav" aria-label="Admin sections">
+        <button type="button" class="nav-item" data-section="overview">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+          <span>Overview</span>
+        </button>
+        <button type="button" class="nav-item" data-section="history">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg>
+          <span>Chat history &amp; logs</span>
+        </button>
+        <button type="button" class="nav-item" data-section="settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+          <span>Model &amp; API settings</span>
+        </button>
+        <button type="button" class="nav-item" data-section="guardrails">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+          <span>Guardrails</span>
+          <span class="nav-badge" id="nav-guard-badge" hidden>Off</span>
+        </button>
+        <button type="button" class="nav-item" data-section="endpoints">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6 2 12l6 6M16 6l6 6-6 6M14 4l-4 16"/></svg>
+          <span>All endpoints</span>
+        </button>
+      </nav>
+
+      <section class="status-panel" aria-label="Service health">
+        <div class="status-item" id="status-llm" data-state="connecting" tabindex="0">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div class="status-text">
+            <span class="status-name">Gemini LLM</span>
+            <span class="status-label">Checking…</span>
+          </div>
+        </div>
+        <div class="status-item" id="status-mcp" data-state="connecting" tabindex="0">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div class="status-text">
+            <span class="status-name">MCP server</span>
+            <span class="status-label">Checking…</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="sidebar-foot">
+        <a class="btn back-link" href="/">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+          <span>Back to chat</span>
+        </a>
+        <button type="button" class="btn" id="logout" hidden>Sign out</button>
+      </div>
+    </aside>
+    <div class="backdrop" id="backdrop" hidden></div>
+
+    <!-- ===== Content ===== -->
+    <main class="main" id="main">
+      <header class="main-head">
+        <button type="button" class="icon-button menu-button" id="menu-button" aria-label="Open navigation"
+                aria-controls="sidebar" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="head-title">
+          <h1 id="section-title">Overview</h1>
+          <span class="head-sub" id="section-sub">Health, configuration and usage</span>
+        </div>
+        <button type="button" class="icon-button" id="refresh-section" aria-label="Refresh this section" title="Refresh">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+        </button>
+        <button type="button" class="icon-button theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
+          <svg class="sun-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <svg class="moon-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+      </header>
+
+      <div class="admin-scroll" id="admin-scroll">
+        <div class="admin-content">
+
+          <!-- Overview -->
+          <section class="panel" id="section-overview" aria-labelledby="section-title">
+            <div class="grid health-grid">
+              <article class="card health-card" id="hc-llm" data-state="connecting">
+                <div class="card-head">
+                  <span class="status-dot" aria-hidden="true"></span>
+                  <h2>Gemini LLM</h2>
+                  <span class="pill hc-label">Checking…</span>
+                </div>
+                <p class="hc-detail muted">Running the first health check…</p>
+                <dl class="kv">
+                  <dt>Latency</dt><dd class="hc-latency">–</dd>
+                  <dt>Checked</dt><dd class="hc-checked">–</dd>
+                  <dt>Check</dt><dd>Model metadata lookup (no generation)</dd>
+                </dl>
+              </article>
+              <article class="card health-card" id="hc-mcp" data-state="connecting">
+                <div class="card-head">
+                  <span class="status-dot" aria-hidden="true"></span>
+                  <h2>MCP server</h2>
+                  <span class="pill hc-label">Checking…</span>
+                </div>
+                <p class="hc-detail muted">Running the first health check…</p>
+                <dl class="kv">
+                  <dt>Latency</dt><dd class="hc-latency">–</dd>
+                  <dt>Checked</dt><dd class="hc-checked">–</dd>
+                  <dt>Check</dt><dd>MCP initialize + ping (no tool call)</dd>
+                </dl>
+              </article>
+            </div>
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" id="run-health">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+                <span>Run health check</span>
+              </button>
+              <span class="muted small" id="health-summary"></span>
+            </div>
+
+            <div class="grid stat-grid" id="stat-grid">
+              <div class="skeleton stat-skeleton"></div><div class="skeleton stat-skeleton"></div>
+              <div class="skeleton stat-skeleton"></div><div class="skeleton stat-skeleton"></div>
+            </div>
+
+            <div class="grid two-col">
+              <article class="card">
+                <h2 class="card-title">Configuration</h2>
+                <dl class="kv" id="config-summary"></dl>
+              </article>
+              <article class="card">
+                <h2 class="card-title">Reply types</h2>
+                <div class="bars" id="kind-bars"></div>
+              </article>
+              <article class="card">
+                <h2 class="card-title">Most used MCP tools</h2>
+                <div class="bars" id="tool-bars"></div>
+              </article>
+              <article class="card">
+                <h2 class="card-title">Recent chats</h2>
+                <div class="mini-list" id="recent-chats"></div>
+              </article>
+            </div>
+          </section>
+
+          <!-- Chat history & logs -->
+          <section class="panel" id="section-history" hidden>
+            <div class="tabs" role="tablist" aria-label="Log type">
+              <button type="button" role="tab" class="tab" id="tab-btn-transcripts" data-tab="transcripts" aria-selected="true" aria-controls="tab-transcripts">Session transcripts</button>
+              <button type="button" role="tab" class="tab" id="tab-btn-applog" data-tab="applog" aria-selected="false" aria-controls="tab-applog">Application log</button>
+            </div>
+
+            <div class="tab-panel" id="tab-transcripts" role="tabpanel" aria-labelledby="tab-btn-transcripts">
+              <div class="split" id="split">
+                <div class="list-pane card">
+                  <div class="search-field">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                    <input type="search" id="chat-search" placeholder="Search title, chat id or session" aria-label="Search transcripts">
+                  </div>
+                  <div class="chips" id="chat-filters" role="group" aria-label="Filter transcripts">
+                    <button type="button" class="chip-filter" data-filter="all" aria-pressed="true">All</button>
+                    <button type="button" class="chip-filter" data-filter="blocked" aria-pressed="false">Blocked</button>
+                    <button type="button" class="chip-filter" data-filter="errors" aria-pressed="false">Errors</button>
+                    <button type="button" class="chip-filter" data-filter="guardoff" aria-pressed="false">Guardrails off</button>
+                  </div>
+                  <div class="list-count muted small" id="chat-count"></div>
+                  <div class="admin-chat-list" id="admin-chat-list"></div>
+                </div>
+                <div class="viewer-pane card" id="viewer">
+                  <div class="viewer-empty">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    <h2>Select a transcript</h2>
+                    <p class="muted">Every chat from every browser is listed here, read from <code>logs/sessions/</code>.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="tab-panel" id="tab-applog" role="tabpanel" aria-labelledby="tab-btn-applog" hidden>
+              <div class="card">
+                <div class="toolbar wrap">
+                  <label class="field-inline">Level
+                    <select id="log-level">
+                      <option value="">All</option><option>INFO</option><option>WARNING</option><option>ERROR</option>
+                    </select>
+                  </label>
+                  <label class="field-inline">Lines
+                    <select id="log-lines"><option>100</option><option selected>300</option><option>1000</option></select>
+                  </label>
+                  <label class="toggle-inline"><input type="checkbox" id="log-auto"> Auto-refresh (5s)</label>
+                  <span class="spacer"></span>
+                  <button type="button" class="btn" id="log-refresh">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span>Refresh</span>
+                  </button>
+                </div>
+                <pre class="log-view" id="app-log" tabindex="0" aria-label="Application log"></pre>
+                <p class="muted small">Personal data and secrets are filtered out before records are written, and filtered again here.</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- Model & API settings -->
+          <section class="panel" id="section-settings" hidden>
+            <div class="grid settings-grid">
+              <form class="card form-card" id="settings-form" novalidate autocomplete="off">
+                <h2 class="card-title">Connection</h2>
+                <p class="callout">
+                  Changes apply to new chat turns immediately. They're kept in server memory only: they survive page
+                  reloads, are <strong>never written to <code>.env</code></strong>, and reset to the <code>.env</code> values when the backend restarts.
+                </p>
+
+                <div class="field">
+                  <label for="f-provider">Provider</label>
+                  <input id="f-provider" value="gemini" readonly>
+                </div>
+
+                <div class="field">
+                  <div class="field-head"><label for="f-model">Model</label><span class="source" id="src-model"></span></div>
+                  <input id="f-model" list="model-list" spellcheck="false" maxlength="100" required>
+                  <datalist id="model-list"></datalist>
+                  <p class="hint" id="hint-model"></p>
+                </div>
+
+                <div class="field">
+                  <div class="field-head"><label for="f-key">Gemini API key</label><span class="source" id="src-key"></span></div>
+                  <div class="input-group">
+                    <input id="f-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="256">
+                    <button type="button" class="icon-button" id="toggle-key" aria-label="Show the key you typed" aria-pressed="false">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                  </div>
+                  <p class="hint">Leave blank to keep the current key. Keys are write-only: the server never sends them back.</p>
+                </div>
+
+                <div class="field">
+                  <div class="field-head"><label for="f-mcp">MCP server URL</label><span class="source" id="src-mcp"></span></div>
+                  <input id="f-mcp" type="url" spellcheck="false" maxlength="2048">
+                  <p class="hint">Leave blank to keep the current URL. Only the host is ever shown, since the path may contain a token.</p>
+                </div>
+
+                <p class="form-error" id="settings-error" role="alert" hidden></p>
+
+                <div class="actions">
+                  <button type="button" class="btn" id="test-settings">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Test connection</span>
+                  </button>
+                  <button type="submit" class="btn btn-primary" id="save-settings">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Save &amp; apply</span>
+                  </button>
+                  <button type="button" class="btn btn-ghost-danger" id="reset-settings">Reset to .env defaults</button>
+                </div>
+
+                <div class="result" id="settings-result" hidden aria-live="polite"></div>
+              </form>
+
+              <aside class="card">
+                <h2 class="card-title">In use now</h2>
+                <dl class="kv" id="settings-current"></dl>
+              </aside>
+            </div>
+          </section>
+
+          <!-- Guardrails -->
+          <section class="panel" id="section-guardrails" hidden>
+            <article class="card guard-card" id="guard-card">
+              <div class="guard-head">
+                <div class="guard-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+                </div>
+                <div class="guard-text">
+                  <h2>Input &amp; output guardrails</h2>
+                  <p class="muted" id="guard-sub">Loading…</p>
+                </div>
+                <button type="button" class="switch" id="guard-switch" role="switch" aria-checked="true" aria-label="Guardrails" disabled>
+                  <span class="switch-track"><span class="switch-thumb"></span></span>
+                  <span class="switch-label">On</span>
+                </button>
+              </div>
+              <div class="confirm" id="guard-confirm" hidden>
+                <p><strong>Turn guardrails off?</strong> Prompt-injection, fraud, tax-only and off-topic messages will reach Gemini,
+                  and answers won't be filtered for approval promises or tax advice. Redaction and grounding stay on.</p>
+                <div class="actions">
+                  <button type="button" class="btn btn-danger" id="guard-confirm-off">Turn off</button>
+                  <button type="button" class="btn" id="guard-confirm-cancel">Keep on</button>
+                </div>
+              </div>
+            </article>
+
+            <div class="grid two-col">
+              <article class="card">
+                <h2 class="card-title">Controlled by this switch</h2>
+                <ul class="check-list" id="guard-controlled">
+                  <li><strong>Prompt injection</strong> ("ignore previous instructions", "reveal your prompt") refused locally</li>
+                  <li><strong>Fraud</strong> (stolen cards, faking income or documents, bypassing KYC) refused locally</li>
+                  <li><strong>Tax-only questions</strong> redirected to a tax professional</li>
+                  <li><strong>Off-topic requests</strong> (jokes, code) answered with a short redirect</li>
+                  <li><strong>Approval and tax flags</strong> passed to Gemini as extra constraints</li>
+                  <li><strong>Output filter</strong>: removes approval promises and tax advice, adds disclaimers</li>
+                </ul>
+              </article>
+              <article class="card">
+                <h2 class="card-title">Always on</h2>
+                <ul class="check-list always">
+                  <li><strong>Sensitive-data redaction</strong> of input, answers and logs (card numbers, CVV, OTP, Aadhaar, PAN…)</li>
+                  <li><strong>Schema validation</strong> of every tool call against the live MCP schema</li>
+                  <li><strong>Spend, pincode and income grounding</strong>: values must come from the user (P1)</li>
+                  <li><strong>₹ figure verification</strong> against this turn's tool results (P1)</li>
+                  <li><strong>Card facts need a tool result</strong>; unverified answers are withheld (P1)</li>
+                  <li><strong>Log redaction</strong> of personal data and secrets</li>
+                </ul>
+              </article>
+            </div>
+
+            <article class="card">
+              <h2 class="card-title">Messages blocked by guardrails (saved logs)</h2>
+              <div class="bars" id="blocked-bars"></div>
+            </article>
+          </section>
+
+          <!-- Endpoints -->
+          <section class="panel" id="section-endpoints" hidden>
+            <div class="card">
+              <div class="toolbar wrap">
+                <div class="search-field grow">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                  <input type="search" id="endpoint-search" placeholder="Search path or purpose" aria-label="Search endpoints">
+                </div>
+                <div class="chips" id="endpoint-filters" role="group" aria-label="Filter by type"></div>
+              </div>
+              <p class="muted small" id="endpoint-count"></p>
+              <div class="table-wrap-admin">
+                <table class="endpoint-table">
+                  <thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Type</th><th>Access</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                  <tbody id="endpoint-rows"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Shown when this browser may not use the admin console -->
+  <div class="lock" id="lock" hidden>
+    <div class="lock-card card">
+      <div class="guard-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      </div>
+      <h2>Admin access</h2>
+      <p class="muted" id="lock-text">The admin console is only available on the machine running the server.</p>
+      <form id="login-form" hidden>
+        <label for="login-token" class="visually-hidden">Admin token</label>
+        <input id="login-token" type="password" autocomplete="current-password" placeholder="Admin token" required>
+        <button type="submit" class="btn btn-primary">Sign in</button>
+      </form>
+      <a class="btn" href="/">Back to chat</a>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+  <script src="{{ url_for('static', path='js/ui.js') }}?v=5" defer></script>
+  <script src="{{ url_for('static', path='js/admin.js') }}?v=1" defer></script>
+</body>
+</html>

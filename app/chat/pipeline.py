@@ -91,13 +91,21 @@ class ChatPipeline:
         self._llm = llm
         self._tools = tools
         self._transcripts = transcripts
+        # Input/output guardrails (safety/guardrails.py). Redaction, schema validation and P1 grounding
+        # are not affected by this switch and always run.
+        self.guardrails_enabled = True
+
+    def configure(self, llm: GeminiClient | None, tools: McpToolGateway | None, guardrails_enabled: bool) -> None:
+        """Swap in clients built from runtime settings (/admin). Turns already running keep the clients
+        they started with."""
+        self._llm, self._tools, self.guardrails_enabled = llm, tools, guardrails_enabled
 
     async def handle(self, session_id: str, message: str, endpoint: str = "POST /api/chat",
                      chat_id: str | None = None) -> ChatReply:
         started = time.perf_counter()
         redaction = redact(_clean_input(message))
         logger.info("Turn received: %d chars, redacted=%s", len(redaction.text), list(redaction.findings) or "none")
-        trace = TurnTrace(endpoint=endpoint, redacted=redaction.findings)
+        trace = TurnTrace(endpoint=endpoint, redacted=redaction.findings, guardrails=self.guardrails_enabled)
 
         # Each chat of a browser is a separate conversation; the transcript tag stays the cookie hash.
         conversation = self._sessions.get(f"{session_id}:{chat_id}" if chat_id else session_id)
@@ -151,30 +159,30 @@ class ChatPipeline:
         if local_reply:
             return ChatReply(local_reply, "local"), text
 
-        check = check_input(text)
+        check = check_input(text) if trace.guardrails else InputCheck()
         if check.blocked:
             logger.info("Input blocked locally: %s", check.reason)
             trace.blocked_reason = check.reason
             history_text = text if check.reason in ("off_topic", "tax_advice") else WITHHELD_HISTORY_TEXT
             return ChatReply(check.reply, "blocked"), history_text
 
-        if self._llm is None or self._tools is None:
+        llm, tools = self._llm, self._tools   # one consistent pair for the whole turn
+        if llm is None or tools is None:
             return ChatReply(NOT_CONFIGURED_REPLY, "error"), text
 
         try:
-            return await self._run_agent(conversation, text, check, trace), text
+            return await self._run_agent(llm, tools, conversation, text, check, trace), text
         except LLMError as exc:
             return ChatReply(exc.user_message, "error"), text
         except ToolServiceError:
             logger.warning("MCP server unavailable for this turn")
             return ChatReply(TOOLS_UNAVAILABLE_REPLY, "error"), text
 
-    async def _run_agent(self, conversation: Conversation, text: str, check: InputCheck,
-                         trace: TurnTrace) -> ChatReply:
-        assert self._llm is not None and self._tools is not None
-        catalog = await self._tools.catalog()
+    async def _run_agent(self, llm: GeminiClient, tools: McpToolGateway, conversation: Conversation, text: str,
+                         check: InputCheck, trace: TurnTrace) -> ChatReply:
+        catalog = await tools.catalog()
         flags = [name for name in ("approval_question", "mentions_tax") if getattr(check, name)]
-        system = build_system_prompt(self._tools.advisor_context, flags)
+        system = build_system_prompt(tools.advisor_context, flags)
         tool = gemini.build_tool(
             [{"name": s.name, "description": s.description, "parameters": s.declared_schema()}
              for s in catalog.exposed()] + [CLARIFY_DECLARATION]
@@ -193,10 +201,10 @@ class ChatPipeline:
         draft = ""
         nudged = False       # a draft stated card facts without any tool result; re-prompted once
         force_tool = False   # the next Gemini call must call a tool (or ask_clarification)
-        async with self._tools.connection() as conn:
+        async with tools.connection() as conn:
             for step in range(MAX_TOOL_STEPS + 1):
                 trace.llm_calls += 1
-                response = await self._llm.generate(
+                response = await llm.generate(
                     contents, system_instruction=system, tool=tool,
                     allow_tool_calls=step < MAX_TOOL_STEPS, require_tool_call=force_tool,
                 )
@@ -218,7 +226,7 @@ class ChatPipeline:
                         question = str((call.args or {}).get("question", "")).strip()
                         if question:
                             return self._finish(question, "clarification", tools_used, check,
-                                                self._allowed_figures(evidence, request_text))
+                                                self._allowed_figures(evidence, request_text), trace.guardrails)
                     outcome = await self._execute(conn, catalog, call, user_text, request_text, trace)
                     if outcome.called:
                         tools_used.append(call.name)
@@ -240,12 +248,12 @@ class ChatPipeline:
                          gemini.user_content(REPAIR_PROMPT.format(figures=", ".join(unsupported)))]
             try:
                 trace.llm_calls += 1
-                revised = gemini.response_text(await self._llm.generate(
+                revised = gemini.response_text(await llm.generate(
                     contents, system_instruction=system, tool=tool, allow_tool_calls=False))
                 draft = revised or draft
             except LLMError:
                 pass
-        return self._finish(draft, "answer", tools_used, check, allowed)
+        return self._finish(draft, "answer", tools_used, check, allowed, trace.guardrails)
 
     @staticmethod
     def _allowed_figures(evidence: set[float], request_text: str) -> set[float]:
@@ -255,13 +263,16 @@ class ChatPipeline:
 
     @staticmethod
     def _finish(text: str, kind: str, tools_used: list[str], check: InputCheck,
-                allowed: set[float]) -> ChatReply:
-        text = strip_unsupported_amounts(text, allowed)
-        text = enforce_output(
-            text,
-            approval_context=check.approval_question or "check_eligibility" in tools_used,
-            tax_context=check.mentions_tax,
-        )
+                allowed: set[float], guardrails: bool = True) -> ChatReply:
+        text = strip_unsupported_amounts(text, allowed)   # P1 figure grounding: always on
+        if guardrails:
+            text = enforce_output(
+                text,
+                approval_context=check.approval_question or "check_eligibility" in tools_used,
+                tax_context=check.mentions_tax,
+            )
+        else:
+            text = redact(text).text   # privacy redaction stays on even with guardrails off
         return ChatReply(text or NO_ANSWER_REPLY, kind, tools_used)
 
     async def _execute(self, conn: ToolConnection, catalog: ToolCatalog, call: types.FunctionCall,

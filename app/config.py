@@ -24,6 +24,8 @@ COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60   # browser identity, so past chats s
 MAX_LISTED_CHATS = 50         # most recent session logs shown in the sidebar
 MAX_SESSIONS = 1000
 MCP_TIMEOUT_SECONDS = 45.0
+HEALTH_CACHE_SECONDS = 30     # /health reuses a check result for this long
+HEALTH_TIMEOUT_SECONDS = 10.0 # each lightweight health check gives up after this
 
 _PLACEHOLDER_MARKER = "PASTE YOUR"
 
@@ -42,6 +44,15 @@ def _env_float(name: str, default: float, low: float, high: float) -> float:
     return min(max(value, low), high)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = _env(name).lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
 @dataclass(frozen=True)
 class Settings:
     mcp_url: str = field(repr=False)
@@ -49,6 +60,8 @@ class Settings:
     llm_model: str
     gemini_api_key: str = field(repr=False)
     llm_timeout_seconds: float
+    guardrails_enabled: bool = True
+    admin_token: str = field(default="", repr=False)   # optional: allows /admin from other machines
 
     def problems(self) -> list[str]:
         """Names of missing or invalid variables (never their values)."""
@@ -66,7 +79,7 @@ class Settings:
     @property
     def secrets(self) -> list[str]:
         """Values that must never appear in logs."""
-        return [value for value in (self.gemini_api_key, self.mcp_url) if value]
+        return [value for value in (self.gemini_api_key, self.mcp_url, self.admin_token) if value]
 
 
 @lru_cache
@@ -79,4 +92,6 @@ def get_settings() -> Settings:
         llm_model=_env("LLM_MODEL") or "gemini-2.5-flash-lite",
         gemini_api_key=_env("GEMINI_API_KEY"),
         llm_timeout_seconds=_env_float("LLM_TIMEOUT_SECONDS", 30.0, 5.0, 120.0),
+        guardrails_enabled=_env_bool("GUARDRAILS_ENABLED", True),
+        admin_token=_env("ADMIN_TOKEN"),
     )

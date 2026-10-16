@@ -55,6 +55,9 @@ class SessionStore:
         self._max_messages = max_messages
         self._sessions: OrderedDict[str, Conversation] = OrderedDict()
 
+    def __len__(self) -> int:
+        return len(self._sessions)
+
     def get(self, session_id: str) -> Conversation:
         self._prune()
         conversation = self._sessions.get(session_id)

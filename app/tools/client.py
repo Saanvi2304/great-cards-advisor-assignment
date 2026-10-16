@@ -100,7 +100,6 @@ class McpToolGateway:
         self._loaded_at = 0.0
         self._lock = asyncio.Lock()
         self.reachable: bool | None = None   # outcome of the latest connection attempt (None = not tried yet)
-        self._last_attempt = 0.0
 
     @property
     def tool_count(self) -> int:
@@ -109,9 +108,6 @@ class McpToolGateway:
     @property
     def loading(self) -> bool:
         return self._lock.locked()
-
-    def retry_due(self, after_seconds: float) -> bool:
-        return not self.loading and time.monotonic() - self._last_attempt >= after_seconds
 
     @property
     def advisor_context(self) -> str:
@@ -152,7 +148,6 @@ class McpToolGateway:
             return self._catalog  # type: ignore[return-value]
         async with self._lock:
             if self._catalog is None or time.monotonic() - self._loaded_at >= CATALOG_TTL_SECONDS:
-                self._last_attempt = time.monotonic()
                 try:
                     await self._refresh()
                     self.reachable = True
@@ -199,10 +194,16 @@ class McpToolGateway:
         text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
         return text[:MAX_CONTEXT_CHARS]
 
-    async def recheck(self) -> None:
-        """Reconnect after a failure by refreshing the catalog now (the cached one is kept if it fails)."""
-        self._loaded_at = 0.0
-        await self.warm_up()
+    async def ping(self, timeout: float) -> None:
+        """Lightweight health check: open a session (MCP initialize) and send an MCP ping; no tool runs."""
+        try:
+            async with asyncio.timeout(timeout):
+                async with self.open_session() as session:
+                    await session.send_ping()
+        except Exception as exc:  # timeouts and transport errors (incl. ExceptionGroup)
+            self.reachable = False
+            raise ToolServiceError(f"MCP ping failed ({type(exc).__name__})") from exc
+        self.reachable = True
 
     async def warm_up(self) -> None:
         try:

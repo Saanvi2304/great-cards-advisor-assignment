@@ -54,11 +54,17 @@ class ChatHistory(BaseModel):
 
 
 class ServiceStatus(BaseModel):
-    state: str        # ready | degraded | connecting | offline | off
+    state: str        # ready | degraded | offline | off
     label: str
     detail: str = ""
+    latency_ms: int | None = None
+    checked_at: str = ""
 
 
-class StatusResponse(BaseModel):
+class HealthResponse(BaseModel):
+    status: str       # ok (both ready) | degraded | down
+    configured: bool
+    guardrails_enabled: bool
+    checked_at: str
     llm: ServiceStatus
     mcp: ServiceStatus
