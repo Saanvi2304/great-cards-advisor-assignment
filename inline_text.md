@@ -200,3 +200,60 @@ I've created `failures.md` in the project root. It assesses all 20 questions fro
 4. Log tool results and error text so future reviews can verify answers.
 
 **Files changed:** only `failures.md` was created, plus this entry in `inline_text.md` as requested. Your earlier `inline_text.md` didn't record the Uvicorn traceback and logging-fix exchanges; I've added a one-line note about that gap and didn't reconstruct them.
+
+---
+
+## 5. User
+
+Fix all issues marked P1 in `failures.md`. Inspect the relevant code and implement the smallest changes needed to address those issues properly. Do not modify `failures.md` or change any P2/P3 issues or unrelated functionality. Append this conversation to `inline_text.md`, preserving its existing content. Update `README.md` to accurately reflect the changes made. Avoid unnecessary refactoring, new dependencies, or architectural changes. Do not run tests, launch the application, or make live LLM/MCP requests; I will test everything myself. When finished, summarise the P1 issues fixed, files changed, and any remaining limitations. Do not claim anything is verified unless it has actually been verified.
+
+## 5. Assistant: work performed
+
+- Read the three P1 items in `failures.md` §7. Read `pipeline.py`, `grounding.py`, `registry.py`, `session.py`, `prompts.py` and `gemini.py`. Re-read Q3–Q5 and Q11 in the session log to confirm what the new checks must reject.
+- **P1-1, strict ₹ check** (`safety/grounding.py`, `chat/pipeline.py`, `chat/session.py`)
+  - **Allowed figures:** only numbers from **this turn's** tool results, plus numbers the user wrote in the current request. The session-wide `Conversation.evidence` pool is removed.
+  - **No conversion of tool numbers:** they are no longer expanded ×12/÷12. The user's own numbers still are.
+  - **Ranges:** `_AMOUNT_RE` now captures both ends of a range (`-`, `–`, `—`, `to`), and both ends are checked. A unit written once applies to both ends ("₹1–2 lakh").
+  - **Hedged amounts:** an amount within two words of "typically", "around", "about", "approximately", "roughly", "usually", "generally", "nearly", "almost", "estimated" or "~" gets no 1% tolerance.
+  - **Prompts:** the system prompt and `REPAIR_PROMPT` now name "this turn's tool results / current request" and forbid typical ranges.
+- **P1-2, spend grounding per argument** (`tools/registry.py`)
+  - **Per value:** `grounding_problem` checks every positive `recommend_cards` value against the numbers in the current request. A value may equal a number the user wrote, or that number ×12 or ÷12. Lounge fields also accept ×3 and ÷4, with 1% or 0.5 tolerance.
+  - **Rejection:** an ungrounded field is named in the rejection, and Gemini is told to ask with `ask_clarification`.
+  - **Current request:** this is the current message plus any earlier messages that ended in a clarifying question (`Conversation.pending_request`), so a "how much do you spend?" → "₹8k groceries" exchange still works.
+  - **Prompt:** one rule was added saying `recommend_cards` uses only current-request amounts.
+- **P1-3, tools required for card facts** (`chat/pipeline.py`, `llm/gemini.py`, `llm/prompts.py`)
+  - **Trigger:** a draft with no tool result this turn that contains a ₹ amount, a percentage or a named bank/co-brand "… Card".
+  - **Re-prompt:** that draft gets one re-prompt (`TOOLS_REQUIRED_PROMPT`), and the next Gemini call uses function-calling mode `ANY` (new `require_tool_call` parameter).
+  - **Fallback:** if the final answer still states card facts with no tool result, it is replaced with `UNVERIFIED_FACTS_REPLY`.
+- **README.md:** updated stages 6, 8 and 9, the conversation-state section and the `session.py`, `prompts.py` and `grounding.py` rows.
+- **Checks run:** `py_compile` on the six changed Python files, and a plain import of `grounding`, `registry` and `pipeline` (this compiles the regexes). There were no errors. I did not run tests, launch the app or call Gemini or MCP, so none of the new behaviour has been exercised.
+- **Not touched:** `failures.md`, the logs, `.env`, the P2/P3 items and unrelated code.
+
+## 5. Assistant: reply
+
+**P1 issues fixed (code written, not tested)**
+1. **Strict ₹ check:**
+   - Allowed figures are now only this turn's tool results plus the user's current request. Earlier turns' tool results no longer count.
+   - Tool numbers are no longer converted ×12/÷12.
+   - Both ends of a range are checked.
+   - Hedged amounts ("around", "typically", …) must match exactly.
+2. **Spend grounding per argument:**
+   - Every `recommend_cards` spend must match a number in the current request (as written, ×12 or ÷12). Lounge visits may also be converted per month or per year to per quarter.
+   - Q4 (no digits) and Q5 (reused 4.8L/1.2L) would now be rejected and turned into a clarifying question.
+3. **Tools required for card facts:**
+   - A no-tool draft that names a card, a ₹ amount or a percentage is re-prompted once, and that retry must call a tool or `ask_clarification`.
+   - If the answer still has no tool backing, a safe fallback message is shown instead.
+
+**Files changed:** `app/safety/grounding.py`, `app/tools/registry.py`, `app/chat/pipeline.py`, `app/chat/session.py`, `app/llm/gemini.py`, `app/llm/prompts.py`, `README.md`, `inline_text.md`.
+
+**Remaining limitations**
+- **Not exercised:** only a compile and import check was run. No test, no app launch and no Gemini/MCP call, so none of the new behaviour has been run end to end.
+- **Follow-ups reusing earlier spends:** these now prompt the user to restate or confirm the amounts. That is a deliberate usability cost of using only the current request.
+- **Combined amounts:** spends summed or split by the model (e.g. "₹5k + ₹3k groceries" → 8000) are rejected unless the user wrote the total. Number words ("four flights") are not parsed.
+- **Answers can't quote earlier tool results:** figures from earlier turns are no longer quotable, so a follow-up that repeats them without calling a tool again gets `[amount not verified]`.
+- **Model arithmetic still possible:** the ₹ check still can't catch a calculated figure that happens to equal a number in this turn's tool results.
+- **Card-fact detection is a heuristic:**
+  - It may miss cards not in the bank/brand list.
+  - It may re-prompt harmless no-tool replies that mention a percentage.
+  - Rates and benefits written without ₹, % or a card name are not detected.
+- **Gemini `ANY` mode:** behaviour depends on Gemini honouring it. The retry happens once only.

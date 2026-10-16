@@ -22,7 +22,8 @@ from app.chat.transcript import TranscriptLogger, TurnTrace
 from app.config import MAX_TOOL_STEPS
 from app.llm import gemini
 from app.llm.gemini import GeminiClient, LLMError
-from app.llm.prompts import CLARIFY_DECLARATION, CLARIFY_TOOL, REPAIR_PROMPT, build_system_prompt
+from app.llm.prompts import (CLARIFY_DECLARATION, CLARIFY_TOOL, REPAIR_PROMPT, TOOLS_REQUIRED_PROMPT,
+                             build_system_prompt)
 from app.safety.grounding import expand_evidence, numbers_in, strip_unsupported_amounts, unsupported_amounts
 from app.safety.guardrails import InputCheck, check_input, enforce_output
 from app.safety.redaction import has_meaningful_content, redact
@@ -43,7 +44,23 @@ TOOLS_UNAVAILABLE_REPLY = (
     "Please try again in a moment."
 )
 NO_ANSWER_REPLY = "Sorry, I couldn't put together a reliable answer for that. Could you rephrase or add a bit more detail?"
+UNVERIFIED_FACTS_REPLY = (
+    "I couldn't confirm those card details from the Great.cards database for this question, so I won't guess. "
+    "Could you tell me which card(s) you'd like me to look up, or share your main monthly spends?"
+)
 WITHHELD_HISTORY_TEXT = "[message withheld by safety filter]"
+
+# Card facts in a draft: rupee amounts, percentages (rates, markups) or a named bank/co-brand card.
+_CARD_FACT_RE = re.compile(
+    r"₹\s*\d|\bRs\.?\s*\d|\bINR\s*\d|\d\s*%"
+    r"|\b(?:HDFC|SBI|ICICI|Axis|Kotak|AU|IDFC|IndusInd|Yes Bank|RBL|HSBC|Amex|American Express|"
+    r"Standard Chartered|Federal|IDBI|Bank of Baroda|BOB|OneCard|Scapia|Flipkart|Amazon|Swiggy|Airtel|"
+    r"Tata|Diners|Magnus|Millennia|Regalia|Infinia)\b[\w\s&+'.-]{0,40}?\bCard\b"
+)
+
+
+def _states_card_facts(text: str) -> bool:
+    return bool(_CARD_FACT_RE.search(text))
 
 
 @dataclass
@@ -86,6 +103,7 @@ class ChatPipeline:
             reply, history_text = await self._respond(conversation, redaction.text, redaction.critical, trace)
             if redaction.findings:
                 reply.notices.insert(0, PRIVACY_NOTICE.format(", ".join(redaction.findings)))
+            conversation.track_request(history_text, reply.kind)
             conversation.add_exchange(history_text, reply.reply)
             if self._transcripts:
                 elapsed_ms = (time.perf_counter() - started) * 1000
@@ -146,19 +164,30 @@ class ChatPipeline:
         ]
         contents.append(gemini.user_content(text))
         user_text = conversation.user_text() + "\n" + text
+        request_text = conversation.request_text(text)
+        evidence: set[float] = set()   # numbers from this turn's tool results only
 
         tools_used: list[str] = []
         draft = ""
+        nudged = False       # a draft stated card facts without any tool result; re-prompted once
+        force_tool = False   # the next Gemini call must call a tool (or ask_clarification)
         async with self._tools.connection() as conn:
             for step in range(MAX_TOOL_STEPS + 1):
                 trace.llm_calls += 1
                 response = await self._llm.generate(
                     contents, system_instruction=system, tool=tool,
-                    allow_tool_calls=step < MAX_TOOL_STEPS,
+                    allow_tool_calls=step < MAX_TOOL_STEPS, require_tool_call=force_tool,
                 )
+                force_tool = False
                 calls = gemini.function_calls(response)
                 if not calls:
                     draft = gemini.response_text(response)
+                    if not tools_used and not nudged and step + 1 < MAX_TOOL_STEPS and _states_card_facts(draft):
+                        logger.warning("Draft stated card facts without a tool result; requiring a tool call")
+                        nudged = force_tool = True
+                        contents += [gemini.model_content(draft), gemini.user_content(TOOLS_REQUIRED_PROMPT)]
+                        draft = ""
+                        continue
                     break
                 contents.append(gemini.response_content(response))
                 parts = []
@@ -167,18 +196,21 @@ class ChatPipeline:
                         question = str((call.args or {}).get("question", "")).strip()
                         if question:
                             return self._finish(question, "clarification", tools_used, check,
-                                                self._allowed_figures(conversation, user_text))
-                    outcome = await self._execute(conn, catalog, call, user_text, trace)
+                                                self._allowed_figures(evidence, request_text))
+                    outcome = await self._execute(conn, catalog, call, user_text, request_text, trace)
                     if outcome.called:
                         tools_used.append(call.name)
-                        conversation.add_evidence(numbers_in(outcome.evidence_text))
+                        evidence |= numbers_in(outcome.evidence_text)
                     parts.append(gemini.function_response_part(call, outcome.payload))
                 contents.append(gemini.function_responses_content(parts))
 
         if not draft:
             return ChatReply(NO_ANSWER_REPLY, "error", tools_used)
+        if not tools_used and _states_card_facts(draft):
+            logger.warning("Answer still stated card facts without a tool result; withholding it")
+            return ChatReply(UNVERIFIED_FACTS_REPLY, "answer", tools_used)
 
-        allowed = self._allowed_figures(conversation, user_text)
+        allowed = self._allowed_figures(evidence, request_text)
         unsupported = unsupported_amounts(draft, allowed)
         if unsupported:
             logger.warning("Draft had %d unsupported rupee figure(s); requesting a grounded rewrite", len(unsupported))
@@ -194,9 +226,10 @@ class ChatPipeline:
         return self._finish(draft, "answer", tools_used, check, allowed)
 
     @staticmethod
-    def _allowed_figures(conversation: Conversation, user_text: str) -> set[float]:
-        """Numbers an answer may quote: MCP results this session plus the user's own figures."""
-        return expand_evidence(conversation.evidence | numbers_in(user_text))
+    def _allowed_figures(evidence: set[float], request_text: str) -> set[float]:
+        """Numbers an answer may quote: this turn's MCP results as returned, plus the user's figures
+        in the current request (and their monthly/annual conversions)."""
+        return evidence | expand_evidence(numbers_in(request_text))
 
     @staticmethod
     def _finish(text: str, kind: str, tools_used: list[str], check: InputCheck,
@@ -210,7 +243,7 @@ class ChatPipeline:
         return ChatReply(text or NO_ANSWER_REPLY, kind, tools_used)
 
     async def _execute(self, conn: ToolConnection, catalog: ToolCatalog, call: types.FunctionCall,
-                       user_text: str, trace: TurnTrace) -> _ToolOutcome:
+                       user_text: str, request_text: str, trace: TurnTrace) -> _ToolOutcome:
         name = call.name or ""
         spec = catalog.get(name)
         if spec is None:
@@ -225,7 +258,7 @@ class ChatPipeline:
             return _ToolOutcome({"error": "Invalid arguments: " + " | ".join(errors)
                                  + " Fix them, or ask the user for the missing information."})
 
-        problem = grounding_problem(name, args, user_text)
+        problem = grounding_problem(name, args, user_text, request_text)
         if problem:
             logger.info("Rejected %s: arguments not grounded in user input", name)
             trace.record_mcp(name, args, "rejected: values not provided by the user")

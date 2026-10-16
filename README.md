@@ -117,7 +117,9 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
    - **Schema validation:** arguments are validated with `jsonschema` against the server's real input schema.
    - **Grounding rules:**
      - `check_eligibility` requires a pincode that the user actually typed, and an income the user stated.
-     - `recommend_cards` requires spend amounts the user stated, not invented defaults.
+     - `recommend_cards` checks **each** spend value separately. It must match a number the user wrote in the **current request**, either as written or converted monthly↔annual (×12 or ÷12). Lounge-visit fields can also be converted from per-month or per-year counts to per-quarter.
+     - The current request is the current message, plus any earlier messages that the bot answered with a clarifying question.
+     - Amounts from older messages, or from the bot's own earlier answers, are rejected. Gemini then asks the user to give or confirm them.
    - **On failure:** the error goes back to Gemini, which corrects the arguments or asks the user.
 
 7. **Live MCP call** (`tools/client.py`)
@@ -127,9 +129,14 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
    - **Caching:** the tool catalog (live schemas) is cached for 30 minutes.
 
 8. **Grounded answer:** Gemini writes a conversational answer from the tool results only.
+   - **Card facts need a tool:** if a draft names a bank or co-brand card, or states a ₹ amount or a percentage, and no MCP tool ran this turn, Gemini is re-prompted once. That retry *must* call a tool or `ask_clarification` (function-calling mode `ANY`).
+   - **Fallback:** if the final answer still states card facts without any tool result, it is replaced with a short message offering to look the card up.
 
 9. **Output guardrails** (`safety/grounding.py`, `safety/guardrails.py`)
-   - **Unsupported figures:** every ₹ amount must match a number from MCP results or the user's own messages. Small display rounding and monthly↔annual conversion are allowed.
+   - **Unsupported figures:** every ₹ amount must match a number from **this turn's** MCP results, or a number the user wrote in the current request.
+     - Tool figures must match as returned (up to 1% for display rounding), with no ×12 or ÷12 conversion. The user's own figures may also be converted monthly↔annual.
+     - Both ends of a range are checked ("₹7,000–8,000", "₹1,000 to ₹1,500").
+     - Hedged amounts ("around ₹7,000", "typically ₹1,000") must match exactly, without the 1% tolerance.
      - If an amount doesn't match, Gemini is asked once to rewrite the answer.
      - Anything still unsupported is replaced with `[amount not verified]`.
    - **Approval promises:** sentences that promise approval (e.g. "guaranteed approval") are removed.
@@ -142,7 +149,8 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
 ### Conversation state
 - Each browser gets an opaque, HttpOnly `gc_session` cookie.
 - History is stored per session, in redacted form only, and capped at 12 messages.
-- Each session also keeps the figures from its earlier tool results, so follow-up answers can quote them.
+- Figures from earlier turns' tool results are **not** carried over, so each answer can quote only that turn's tool results and the user's current request.
+- While the bot is waiting for an answer to a clarifying question, the session keeps the text of the open request, so the user's earlier figures still count after they reply.
 - A per-session lock prevents overlapping turns.
 - Sessions expire after 1 hour, and the store is capped at 1000 sessions.
 
@@ -273,21 +281,21 @@ great-cards/
 |---|---|
 | `pipeline.py` | `ChatPipeline`, which runs the full flow for one turn (stages 1–9 above): redaction, local intents, guardrails, the Gemini tool loop, argument validation, MCP execution, figure grounding and output guardrails. |
 | `intents.py` | Regex-based small talk (greetings, help, thanks, bye) answered locally. |
-| `session.py` | `Conversation` (redacted history, evidence figures, lock, turn count, transcript file path) and `SessionStore` (expiry, size cap, eviction of least-recently-used sessions). |
+| `session.py` | `Conversation` (redacted history, the open request carried across clarifying questions, lock, turn count, transcript file path) and `SessionStore` (expiry, size cap, eviction of least-recently-used sessions). |
 | `transcript.py` | `TurnTrace` (collects the endpoint, Gemini calls, MCP calls and guardrail outcome for one turn) and `TranscriptLogger` (creates a log file per chat session and appends each turn and the reset event, writing off the event loop). |
 
 ### `app/llm/`: Gemini integration
 | File | Responsibility |
 |---|---|
 | `gemini.py` | Async `GeminiClient` (timeout from `LLM_TIMEOUT_SECONDS`, friendly error mapping). Converts MCP JSON Schemas into Gemini function declarations and provides helpers for messages and function calls. |
-| `prompts.py` | System prompt (scope, tool-selection guide, clarification rules, safety rules, style), the `ask_clarification` declaration and the prompt that asks Gemini to rewrite answers with unsupported figures. |
+| `prompts.py` | System prompt (scope, tool-selection guide, clarification rules, safety rules, style), the `ask_clarification` declaration, the prompt that asks Gemini to rewrite answers with unsupported figures, and the prompt that requires a tool call when a draft states card facts without one. |
 
 ### `app/safety/`: privacy and guardrails
 | File | Responsibility |
 |---|---|
 | `redaction.py` | Detects and redacts sensitive data; flags critical secrets (card number, CVV, OTP, PIN, password). |
 | `guardrails.py` | `check_input` (injection, fraud, tax, off-topic, approval questions) and `enforce_output` (removes approval promises and tax advice, adds disclaimers). |
-| `grounding.py` | Extracts numbers from evidence and checks or removes ₹ figures in answers that the evidence doesn't support. |
+| `grounding.py` | Extracts numbers from evidence and checks or removes ₹ figures in answers that the evidence doesn't support. It checks both ends of ranges and is stricter with hedged estimates. |
 
 ### `app/tools/`: Great.cards MCP integration
 | File | Responsibility |

@@ -110,6 +110,7 @@ class GeminiClient:
         system_instruction: str,
         tool: types.Tool | None = None,
         allow_tool_calls: bool = True,
+        require_tool_call: bool = False,
     ) -> types.GenerateContentResponse:
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
@@ -119,8 +120,9 @@ class GeminiClient:
         )
         if tool is not None:
             config.tools = [tool]
+            mode = "NONE" if not allow_tool_calls else "ANY" if require_tool_call else "AUTO"
             config.tool_config = types.ToolConfig(
-                function_calling_config=types.FunctionCallingConfig(mode="AUTO" if allow_tool_calls else "NONE")
+                function_calling_config=types.FunctionCallingConfig(mode=mode)
             )
         try:
             return await asyncio.wait_for(

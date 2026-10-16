@@ -12,14 +12,16 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-MAX_EVIDENCE_NUMBERS = 20_000
+MAX_PENDING_REQUEST_CHARS = 3000
 
 
 @dataclass
 class Conversation:
     max_messages: int
     history: deque[tuple[str, str]] = field(init=False)
-    evidence: set[float] = field(default_factory=set)
+    # User text of turns that ended with a clarifying question; together with the next
+    # message it forms the "current request" whose figures tools and answers may use.
+    pending_request: str = ""
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_seen: float = field(default_factory=time.monotonic)
     turn_count: int = 0
@@ -36,10 +38,13 @@ class Conversation:
     def user_text(self) -> str:
         return "\n".join(text for role, text in self.history if role == "user")
 
-    def add_evidence(self, numbers: set[float]) -> None:
-        if len(self.evidence) + len(numbers) > MAX_EVIDENCE_NUMBERS:
-            self.evidence.clear()
-        self.evidence |= numbers
+    def request_text(self, text: str) -> str:
+        """The current request: `text` plus any earlier messages that led to a clarifying question."""
+        return f"{self.pending_request}\n{text}".strip()
+
+    def track_request(self, user_text: str, kind: str) -> None:
+        """Carry a request across clarifying questions; any other reply closes it."""
+        self.pending_request = self.request_text(user_text)[-MAX_PENDING_REQUEST_CHARS:] if kind == "clarification" else ""
 
 
 class SessionStore:

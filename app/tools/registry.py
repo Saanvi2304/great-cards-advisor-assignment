@@ -14,6 +14,8 @@ from typing import Any
 
 from jsonschema.validators import validator_for
 
+from app.safety.grounding import numbers_in
+
 # Tools Gemini may call, with parameters hidden from it (marketing/content-generation
 # knobs or internal IDs that a chat user would never supply).
 EXPOSED_TOOLS: dict[str, frozenset[str]] = {
@@ -141,8 +143,23 @@ def _mentions_amount(text: str) -> bool:
     return bool(re.search(r"\d", text))
 
 
-def grounding_problem(name: str, args: dict[str, Any], user_text: str) -> str | None:
-    """Reject calls built on values the user never provided (no guessing)."""
+# Simple conversions allowed from a number the user wrote: rupee spends may be monthly or
+# annual; lounge fields are visits per quarter (from per-quarter, per-month or per-year counts).
+_SPEND_FACTORS = (1.0, 12.0, 1 / 12)
+_LOUNGE_FACTORS = (1.0, 3.0, 0.25)
+
+
+def _derived_from(value: float, stated: set[float], factors: tuple[float, ...]) -> bool:
+    return any(abs(value - number * factor) <= max(0.5, abs(number * factor) * 0.01)
+               for number in stated for factor in factors)
+
+
+def grounding_problem(name: str, args: dict[str, Any], user_text: str, request_text: str) -> str | None:
+    """Reject calls built on values the user never provided (no guessing).
+
+    `user_text` is everything the user said this session; `request_text` is the current
+    request only (this message, plus earlier messages answered by a clarifying question).
+    """
     if name == "check_eligibility":
         pincode = str(args.get("pincode", ""))
         if not re.search(rf"(?<!\d){re.escape(pincode)}(?!\d)", user_text):
@@ -152,10 +169,17 @@ def grounding_problem(name: str, args: dict[str, Any], user_text: str) -> str | 
             return ("The user has not stated their income. Do not assume it; "
                     "call ask_clarification to request their monthly or annual income.")
     if name == "recommend_cards":
-        spends = [v for k, v in args.items()
-                  if k not in _SPEND_EXCLUDED_KEYS and isinstance(v, (int, float)) and v > 0]
-        if not spends or not _mentions_amount(user_text):
+        spends = {k: v for k, v in args.items()
+                  if k not in _SPEND_EXCLUDED_KEYS and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0}
+        if not spends:
             return ("The user has not stated any spending amounts, so a personalised ranking would rest on guesses. "
                     "Ask for their main monthly spends with ask_clarification, or use list_cards / "
                     "generate_content_brief for a general category answer.")
+        stated = numbers_in(request_text)
+        ungrounded = sorted(k for k, v in spends.items()
+                            if not _derived_from(v, stated, _LOUNGE_FACTORS if "lounge" in k else _SPEND_FACTORS))
+        if ungrounded:
+            return (f"These values are not amounts the user stated in this request: {', '.join(ungrounded)}. "
+                    "Do not estimate them or reuse amounts from earlier answers. Call ask_clarification to ask "
+                    "the user for those amounts (or to confirm earlier ones), or leave those fields out.")
     return None
