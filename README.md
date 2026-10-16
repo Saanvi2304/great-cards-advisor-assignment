@@ -2,6 +2,9 @@
 
 A web chatbot that helps Indian users choose credit cards based on their spending, rewards, fees and eligibility. It is built with **Python, FastAPI and HTML templates**. **Gemini** works out what the user wants and picks a tool, and the **live Great.cards MCP server** supplies the card data.
 
+> **Architecture Mind Map for AI (`codebase_mind_map.md`):**
+> A comprehensive visual and structural mind map of the entire codebase is provided in [`codebase_mind_map.md`](codebase_mind_map.md). It is designed specifically for AI coding assistants (and developers) to get the whole idea of the project in one place—including visual Mermaid mind maps, complete pipeline data flows, a symbol directory with line links, and the full history of architectural safety fixes.
+
 ---
 
 ## 1. Setup
@@ -13,14 +16,18 @@ A web chatbot that helps Indian users choose credit cards based on their spendin
 
 ### Steps
 
-1. **Open a terminal in the project folder**
-   ```powershell
-   cd D:\great-cards
+1. **Clone the repository and open the folder**
+   ```bash
+   git clone https://github.com/Saanvi2304/great-cards-advisor-assignment.git
+   cd great-cards-advisor-assignment
    ```
+   *(Or navigate directly to your local project directory, e.g. `cd D:\great-cards`)*
 
 2. **Activate the existing virtual environment**
    ```powershell
    .\venv\Scripts\Activate.ps1
+   # Or run the Windows batch script:
+   .\venv.bat
    ```
    If you are in Git Bash, run `source venv/Scripts/activate` instead.
 
@@ -33,7 +40,7 @@ A web chatbot that helps Indian users choose credit cards based on their spendin
    ```env
    MCP_URL="<your Great.cards MCP server URL>"
    LLM_PROVIDER=gemini
-   LLM_MODEL=gemini-2.5-flash-lite
+   LLM_MODEL=gemini-3.5-flash-lite
    GEMINI_API_KEY="<your Gemini API key>"
    LLM_TIMEOUT_SECONDS=30
    GUARDRAILS_ENABLED=true        # optional, default true
@@ -45,6 +52,8 @@ A web chatbot that helps Indian users choose credit cards based on their spendin
 5. **Start the server**
    ```powershell
    uvicorn app.main:app --reload
+   # Or run the Windows launcher batch script:
+   .\run.bat
    ```
 
 6. **Open the chatbot** at http://127.0.0.1:8000 and the **admin console** at http://127.0.0.1:8000/admin
@@ -103,7 +112,7 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
    - **Mostly-secret messages:** if a message is mostly secrets, the bot replies locally with a safety warning.
    - **Notice to the user:** the user is shown which kinds of data were removed.
 
-3. **Local intent handling** (`chat/intents.py`): messages that are entirely "Hi", "Hello", "how are you" (alone or after a greeting), "help", "thanks", "bye" or similar get canned replies. No Gemini or MCP call is made.
+3. **Local intent handling** (`chat/intents.py`): messages that are entirely "Hi", "Hello", "how are you", "what's up" or "wassup" (alone or after a greeting), "help", "thanks", "bye" or similar get canned replies. No Gemini or MCP call is made.
 
 4. **Input guardrails** (`safety/guardrails.py`), enforced in code. Together with the output filter in stage 9, they can be switched off at runtime from `/admin` (on by default, see [Admin console](#admin-console)); redaction and grounding always run:
    - **Prompt injection** ("ignore previous instructions", "reveal your prompt"): refused.
@@ -120,6 +129,7 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
 
 6. **Argument validation** (`tools/registry.py`)
    - **Parameter checks:** unknown or hidden parameters are rejected, and harmless type slips are fixed (for example `"5000"` becomes `5000`).
+   - **Consistent descriptions:** the tool and parameter descriptions Gemini sees drop any sentence or bullet that names a hidden parameter or a narrowed-out enum value (for example `detail_level`, `persona` and `card_comparison` for `generate_content_brief`, `bank_ids` for `list_cards`), so Gemini isn't told to send arguments that would be rejected. Validation is unchanged.
    - **Schema validation:** arguments are validated with `jsonschema` against the server's real input schema.
    - **Grounding rules:**
      - `check_eligibility` requires a pincode that the user actually typed and that looks like a real Indian pincode (6 digits, starting 11–85), and an income the user stated.
@@ -128,6 +138,8 @@ Reply shown in the web UI (with "Source" tags and privacy notices)
      - The current request is the current message, plus any earlier messages that the bot answered with a clarifying question.
      - Amounts from older messages, or from the bot's own earlier answers, are rejected. Gemini then asks the user to give or confirm them.
    - **On failure:** the error goes back to Gemini, which corrects the arguments or asks the user.
+     - If the only problem is a parameter Gemini isn't allowed to send, the error names it and says the other arguments pass schema validation, so the next call can drop just that parameter.
+     - Validation gives the same result every time within a turn. A call identical to one already rejected this turn is rejected again without re-running the checks, with an instruction not to repeat it. Nothing is ever retried automatically.
 
 7. **Live MCP call** (`tools/client.py`)
    - **Connection:** one MCP session per chat turn, opened only when a tool is actually needed and always closed afterwards.
@@ -252,7 +264,7 @@ Example entry:
 ---- Turn 2 | 2026-10-15 21:31:02 | POST /api/chat | 3184 ms ----
 USER:
     I spend 8000 on Amazon and 3000 on Swiggy every month
-Gemini API: 2 generateContent call(s) [gemini-2.5-flash-lite]
+Gemini API: 2 generateContent call(s) [gemini-3.5-flash-lite]
 MCP tools:
     - recommend_cards {"amazon_spends": 8000, "online_food_ordering": 3000} -> ok
         detail: {"recommendations":[...]} ...[1840 more chars]
@@ -263,6 +275,7 @@ ASSISTANT [answer]:
 **2. Application log (`logs/app.log`)**
 
 This file mirrors the console log: startup, tool catalog loading, warnings and errors.
+- Each turn that uses MCP adds one line such as `MCP session timing: setup 640 ms, recommend_cards 4210 ms, close 120 ms`. Setup covers the connection and MCP `initialize`. This separates MCP time from Gemini time within the turn's total.
 - It records metadata only: message length, redaction categories, tool names and argument *field names*.
 - A logging filter redacts personal data and masks the API key and MCP URL in every record (console and file), including tracebacks.
 - Transport libraries are kept at WARNING level so request URLs are not logged.
@@ -309,8 +322,6 @@ great-cards/
 │       ├── js/ui.js
 │       ├── js/chat.js
 │       └── js/admin.js
-├── data/
-│   └── mcp_tools.json
 ├── logs/                     (created on startup, git-ignored)
 │   ├── app.log
 │   └── sessions/
@@ -322,7 +333,13 @@ great-cards/
 ├── .env
 ├── .env.example
 ├── .gitignore
+├── codebase_mind_map.md      (complete architectural mind map for AI context)
+├── failures.md               (systematic 20-question failure report)
+├── product_owner_note.md     (one-page executive note to the product owner)
+├── inline_text.md            (development conversation log)
 ├── requirements.txt
+├── run.bat                   (Windows launcher script)
+├── venv.bat                  (Windows venv activation script)
 └── README.md
 ```
 
@@ -330,16 +347,20 @@ great-cards/
 | Path | Responsibility |
 |---|---|
 | `app/` | All application code (Python package). |
-| `data/mcp_tools.json` | Offline snapshot of the MCP tool descriptions and schemas. **Reference only:** the app always uses the live schemas from the server at runtime. |
+| `codebase_mind_map.md` | Comprehensive architectural and structural mind map of the entire codebase and data flow, specifically curated for AI coding assistants (and developers) to get the whole idea of the project. |
+| `failures.md` | Detailed 20-question failure analysis report against the assignment requirements, classifying findings across Model, MCP tool, Data, and App logic. |
+| `product_owner_note.md` | Executive one-page briefing for the product owner answering what users would get wrong, what was fixed, the latency-vs-quality trade-off, ranked MCP/data improvements, and future scaling. |
 | `logs/` | Runtime logs, created automatically on startup and git-ignored: `app.log` (application log) and `sessions/` (one transcript file per chat session). See [Logging](#logging). |
 | `logs_failure_example/` | Contains logs from failure testing as an example of how logs will look after running the app. It has nothing to do with the running of the app and is just an example. |
-| `tests/test_spend_period.py` | Offline regression checks (no Gemini or MCP calls) for the spend-period rule and the P1 figure grounding. Run with `venv\Scripts\python -m unittest discover -s tests -v`. It reads `data/mcp_tools.json` for the `recommend_cards` schema. |
+| `tests/test_spend_period.py` | Offline regression checks (no Gemini or MCP calls) for the spend-period rule and the P1 figure grounding. Run with `venv\Scripts\python -m unittest discover -s tests -v`. |
 | `venv/` | The existing Python virtual environment. |
 | `.env` | Your real configuration and secrets (never committed or logged). |
 | `.env.example` | Template listing the required environment variables. |
 | `.gitignore` | Keeps `.env`, `venv/`, `logs/` and Python caches out of git. |
 | `inline_text.md` | Log of the development conversation used to build this project. |
 | `requirements.txt` | Python dependencies (FastAPI, Uvicorn, Jinja2, python-dotenv, Pydantic, httpx, mcp, google-genai, jsonschema). |
+| `run.bat` | Convenience batch script to launch the FastAPI server via `uvicorn app.main:app --reload`. |
+| `venv.bat` | Convenience batch script to activate the virtual environment on Windows. |
 
 ### `app/` (top level)
 | File | Responsibility |

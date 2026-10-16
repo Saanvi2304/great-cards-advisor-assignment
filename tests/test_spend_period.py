@@ -118,13 +118,39 @@ class P1GroundingPreserved(unittest.TestCase):
         self.assertTrue(unsupported_amounts("You save ₹1,29,852 a year.", allowed))
 
 
+_RECOMMEND_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "amazon_spends": {"type": "number"},
+        "flipkart_spends": {"type": "number"},
+        "other_online_spends": {"type": "number"},
+        "other_offline_spends": {"type": "number"},
+        "grocery_spends_online": {"type": "number"},
+        "online_food_ordering": {"type": "number"},
+        "fuel": {"type": "number"},
+        "dining_or_going_out": {"type": "number"},
+        "flights_annual": {"type": "number"},
+        "hotels_annual": {"type": "number"},
+        "domestic_lounge_usage_quarterly": {"type": "number"},
+        "international_lounge_usage_quarterly": {"type": "number"},
+        "mobile_phone_bills": {"type": "number"},
+        "electricity_bills": {"type": "number"},
+        "water_bills": {"type": "number"},
+        "insurance_health_annual": {"type": "number"},
+        "insurance_car_or_bike_annual": {"type": "number"},
+        "rent": {"type": "number"},
+        "school_fees": {"type": "number"},
+        "offline_grocery": {"type": "number"},
+        "life_insurance": {"type": "number"},
+        "top_n": {"type": "number", "default": 5},
+        "response_format": {"type": "string", "enum": ["full", "brief", "comparison"], "default": "full"},
+    },
+}
+
+
 async def _execute_recommend(args: dict, request: str) -> tuple[str | None, bool]:
     """Run ChatPipeline._execute with a fake MCP connection; return (error text, whether MCP was called)."""
-    snapshot = json.loads(Path(__file__).resolve().parents[1].joinpath("data", "mcp_tools.json")
-                          .read_text(encoding="utf-8"))
-    tools = snapshot if isinstance(snapshot, list) else snapshot.get("tools", snapshot)
-    schema = next(t["input_schema"] for t in tools if t["name"] == "recommend_cards")
-    spec = ToolSpec.from_mcp(SimpleNamespace(name="recommend_cards", description="", inputSchema=schema))
+    spec = ToolSpec.from_mcp(SimpleNamespace(name="recommend_cards", description="", inputSchema=_RECOMMEND_SCHEMA))
 
     class FakeConnection:
         called = False
@@ -142,3 +168,4 @@ async def _execute_recommend(args: dict, request: str) -> tuple[str | None, bool
 
 if __name__ == "__main__":
     unittest.main()
+

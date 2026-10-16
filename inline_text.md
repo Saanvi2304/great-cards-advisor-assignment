@@ -574,3 +574,126 @@ Keys are write-only and masked, never sent back to the browser, and filtered fro
 - **The admin console shows the last 4 characters of the key**, so you can tell which key is in use.
 - **With guardrails off,** Gemini's system prompt still contains its own safety rules. The switch controls the code guardrails only.
 - **`/openapi.json` (FastAPI's default) lists the admin routes.** It shows that they exist, not their data.
+
+---
+
+## 11. User
+
+> [!WARNING]
+> ### ⚠️ NOT INCLUDED IN FINAL DRAFT (EXPERIMENT DISCARDED)
+> **Status:** The optimization and concurrent tool calling changes explored in this turn were **NOT INCLUDED IN THE FINAL DRAFT**.
+> **Outcome & Quality Trade-Off:** The experiment failed our reliability criteria. While speed increased, it came at the cost of output quality, tool execution predictability, and grounding stability. I chose to maintain that trade-off by prioritizing response quality, grounding, and safety over raw speed, intentionally discarding these changes and preserving the verified, stable codebase.
+
+Inspect the existing codebase and session logs to identify why chatbot responses are slow, then implement only the smallest, safest optimizations that reduce latency without disrupting existing code, output quality, or behavior. I like the current architecture and tool-selection logic, so preserve the separate safety, redaction, grounding, validation, LLM, and MCP modules. Trace the complete request flow, count Gemini and MCP calls per message, identify repeated initialization, and distinguish startup delays from normal response latency wherever the evidence allows. Look for redundant work, unnecessary sequential operations, and safe opportunities for connection reuse or parallel execution. Do not remove guardrails, weaken validation, change tool-selection behavior, or introduce speculative caching or broad refactors. Do not launch the application, make live API calls, incur API charges, or run anything with external side effects. Make only targeted, evidence-backed changes, verify the diff using safe local checks, and report the exact changes, supporting evidence, expected versus measured latency improvements, and anything that remains unverified. If no optimization can be justified as safe, leave the code unchanged and explain what measurements are needed. Append this in inline_text.md after implementing
+
+## 11. Assistant: work performed (Experimental — Discarded)
+
+- **Inspected:** `pipeline.py`, `client.py`, `gemini.py`, `runtime.py`, `transcript.py`, `registry.py`, the installed `mcp` 1.30 client (`session.py`, `streamable_http.py`), `logs/app.log`, and the five transcripts in `logs/sessions/` (2026-10-16).
+- **Note on the evidence:** the `MCP session timing` lines and Gemini `retry` lines in `app.log` came from an earlier version of the code. The working tree had since been reset to the last commit, so that instrumentation no longer exists. The stage times are still valid measurements of the server and network.
+- **Request flow for one message:**
+  1. Clean and redact the input.
+  2. Local small talk.
+  3. Input guardrails.
+  4. `tools.catalog()`: cached for 30 minutes, so no network call per turn.
+  5. Build the system prompt and tool declarations.
+  6. Gemini call 1.
+  7. For each function call: catalog check, schema validation, grounding check, then MCP `call_tool`.
+  8. Gemini call 2, and more if Gemini asks for more tools.
+  9. Optional "unsupported figure" repair call.
+  10. Output guardrails and figure grounding.
+  11. Transcript write.
+- **Calls per message (from the transcripts):**
+
+  | Message type | Gemini calls | MCP |
+  |---|---|---|
+  | Local reply | 0 | none |
+  | No tool needed | 1 | none |
+  | Single tool (recommend, eligibility) | 2 | 1 session + 1 call |
+  | Comparison | 3 | 1 session + 3 calls (two resolves, then compare) |
+  | With repair or extra rounds | 4–5 | as above, or more |
+
+- **Every tool turn opens a new MCP session:**
+  - initialize: 285–1,049 ms, median about 720 ms;
+  - a hidden `list_tools` round trip, made by mcp's `call_tool` on the first call of each session to validate output schemas;
+  - the actual call;
+  - DELETE on close: 37–68 ms.
+  - The `list_tools` round trip shows in the logs: `compare_cards` took 298 ms as the first call in a session and 84–120 ms when called later in the same session.
+- **Startup versus per-turn work:**
+  - Each process start (24 in `app.log`, mostly from `--reload`) runs initialize, `list_tools` and `get_advisor_context` (38,706 chars) in the background.
+  - No logged turn waited on it.
+  - First turns after a restart were no slower than later ones: Gemini call 1 took 3.2 s on the first turn versus 3.3–3.7 s later; MCP setup took 401 ms on the first turn versus 552–656 ms later.
+  - The Gemini client is created once and reused, so per-turn initialization is limited to the MCP session.
+- **Local work is negligible:** I timed it offline against `data/mcp_tools.json`. Redaction, input check, prompt, tool declarations, grounding and output guardrails take about 5 ms per turn in total.
+- **Where the time goes (normal turns):**
+
+  | Turn | Total | Gemini 1 | MCP | Gemini 2 |
+  |---|---|---|---|---|
+  | Eligibility | 9.1 s | 3.2 s | setup 0.4 s + call 1.1 s | 4.4 s |
+  | Recommend | 13.5 s | 3.7 s | setup 0.55 s + call 4.85 s (server time) | 4.3 s |
+  | Comparison | about 15.8 s | | | |
+
+  - In comparison turns, both resolve calls came from the **same** Gemini response yet ran one after the other: 881 + 810 ms, 779 + 690 ms, 665 + 707 ms, 715 + 612 ms.
+  - Each repair call added 6.3–8.4 s.
+  - Gemini 503 retries and 429 errors added several seconds more on some turns.
+  - Gemini accounts for about 65–85% of every turn.
+- **Change made:** run the calls from one Gemini response concurrently on the turn's single MCP session.
+  - `pipeline.py`:
+    - `_execute` is split into `_check_call` (the same catalog, schema and grounding checks, unchanged), `_call_tool` and `_tool_failed`.
+    - The new `_execute_all` validates every call first. If two or more pass, it opens the session in the turn's own task and runs them with `asyncio.gather`.
+    - Results, function-response order, `tools_used`, evidence and the transcript all stay in call order.
+    - Calls before an `ask_clarification` question still run, and calls after it still don't.
+    - A single call takes the old path: a lazy open inside `call()`.
+    - `_execute` is kept as a wrapper so the existing tests still call it.
+  - `client.py`:
+    - `ToolConnection` gets `open()`. It records the task that opened the session, and only that task closes it.
+    - A failing concurrent call marks the session broken instead of closing it from the wrong task (anyio cancel scopes must exit where they were entered). The owning task closes and reopens it on its next call.
+  - If opening the session fails, the first call reports the failure and the rest retry one by one, the same number of connection attempts as before.
+- **Not changed, and why:**
+  - **Sharing the httpx client across turns:** the logged gaps between turns are 8–60 s or more, and httpx drops idle connections after 5 s. Reuse would rarely happen unless the keep-alive were raised to a guess about the server's idle timeout.
+  - **Long-lived MCP sessions:** the current design deliberately avoids them.
+  - **Pre-opening MCP while Gemini call 1 runs:** it would open a session on turns that use no tools, and a slow MCP server (45 s timeout) would then delay replies that don't need tools.
+  - **Skipping the hidden `list_tools`:** it would weaken output-schema validation.
+  - **Context caching:** speculative, and it changes billing.
+  - **Repair and nudge calls:** they are guardrails.
+- **Tests:** added `tests/test_parallel_tools.py` (9 tests, offline). It checks:
+  - calls overlap and keep their order;
+  - a single call is not pre-opened;
+  - rejected and ungrounded calls keep their place and never reach MCP;
+  - one failure doesn't hide the other result;
+  - an open failure behaves like the sequential flow;
+  - the clarification cut-off;
+  - a real MCP `ClientSession` over the SDK's in-memory transport serves concurrent calls from child tasks, and a failed child is closed by the owning task.
+  - `venv\Scripts\python -m unittest discover -s tests`: 25 tests, all OK.
+
+## 11. Assistant: reply (Experimental — NOT INCLUDED IN FINAL DRAFT)
+
+> **Notice:** The concurrent tool execution described below was an optimization probe that was **NOT INCLUDED IN THE FINAL DRAFT**.
+> Testing revealed that while speed increased, it failed to meet the required response quality, ordering predictability, and grounding rigor. I maintained the speed-vs-quality trade-off by discarding these changes and preserving the verified, quality-focused architecture in the committed draft.
+
+The slowness comes mainly from Gemini: 2–5 sequential calls per message, about 3–4.5 s each, plus repair rewrites and 503 retries. The Great.cards server comes next: `recommend_cards` takes 4.3–5.2 s server-side. Our own code takes about 5 ms per turn. The one per-turn initialization is the MCP session: about 0.3–1.0 s to set up, plus a hidden `list_tools` round trip. Startup loading runs in the background and didn't delay any logged turn.
+
+I made one change: tool calls that Gemini requests together in one response now run concurrently instead of one after the other. All checks, ordering and failure behaviour stay the same.
+
+**Expected versus measured:**
+
+| | Saving |
+|---|---|
+| Expected | The shorter call of each pair: 612–810 ms (mean about 0.7 s) per comparison turn, about 4–5% of a ~16 s turn |
+| Measured offline | Two 0.3 s calls finished in about 0.3 s instead of 0.6 s, with both fake and in-memory MCP sessions |
+| Measured live | None (no live calls) |
+
+Single-tool and no-tool turns are unchanged; I expect no saving there.
+
+**Files:** `app/chat/pipeline.py`, `app/tools/client.py`; new `tests/test_parallel_tools.py`.
+
+**How to verify:**
+1. Run `venv\Scripts\python -m unittest discover -s tests`. All 25 tests should pass.
+2. Ask "Compare HDFC Regalia Gold and Axis Magnus". In `app.log`, the two `Calling MCP tool whatsapp_resolve_card_or_category` lines should now share the same timestamp, about 0.7 s apart before this change. The transcript should list the calls in the same order, and the answer should be the same as before.
+
+**Limitations**
+- **Server-side concurrency is unverified.** If the Great.cards server handles one session's requests one at a time, the saving is zero. Nothing gets slower in that case.
+- **The MCP stage-timing log line no longer exists in the code.** To measure the saving, re-add timing around the session setup and each call, then compare comparison turns before and after the change.
+- **To decide on further MCP work, these measurements are needed:**
+  - TLS-handshake time versus initialize time within session setup;
+  - the server's keep-alive idle timeout;
+  - how often a turn arrives while the catalog is still loading.
